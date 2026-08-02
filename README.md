@@ -3,9 +3,10 @@
 在 Lark 里私聊或群 @ 机器人，背后跑的是本机的 Claude Code —— 手机上也能写代码、查资料、跑命令。
 
 ```
-Lark 消息 → 桥接（Node/TS）→ Claude Agent SDK → claude CLI（容器内或宿主机）
-                ↓
-          PostgreSQL：群聊存档 + 向量检索
+Lark 消息 ─┐
+定时任务 ──┴→ 桥接（Node/TS）→ Claude Agent SDK → claude CLI（容器内或宿主机）
+                   ↓                                      ↑
+        PostgreSQL：群聊存档 / 向量 / 任务          插件：plugins/*.mts + mcp.json
 ```
 
 ## 能做什么
@@ -15,6 +16,8 @@ Lark 消息 → 桥接（Node/TS）→ Claude Agent SDK → claude CLI（容器�
 - **群聊长期记忆**：每条群消息实时落库，支持关键词 + 语义两种检索
 - **容器隔离**：每个 bot 一个 Docker 容器，碰不到宿主机（也可切宿主机模式自用）
 - **Lark OpenAPI**：agent 能查群成员、搜云文档、读多维表格
+- **定时任务**：「每天九点给我整理…」到点自动跑并推回会话
+- **插件系统**：加功能改一个配置文件，不用动核心代码
 - **斜杠命令**：`/new` `/cd` `/stop` `/status` `/yolo`；其余转给 Claude Code（`/usage` `/context` `/compact` …）
 
 ## 环境要求
@@ -66,6 +69,90 @@ systemctl --user enable --now lark-embed
 
 群消息落库后由后台 worker 15 秒一轮批量补向量。**服务没起也不影响收发消息** ——
 只是暂时搜不到语义相似的内容，起来后会自动补上。
+
+## 加功能：插件系统
+
+**不用改核心代码。** 两条路，按需求选（详见 [plugins/README.md](plugins/README.md)）：
+
+### A. 社区现成的 MCP → 改 `mcp.json`
+
+天气、GitHub、Notion、Playwright、数据库…… 大多有人做好了：
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" },
+      "deny": ["delete_repository", "merge_pull_request"]
+    }
+  }
+}
+```
+
+支持 `stdio` / `http` / `sse` 三种传输。额外字段：
+
+| | |
+|---|---|
+| `scope` | `all`（默认）/ `group` 只群聊 / `dm` 只私聊 |
+| `deny` | 禁止的工具名（不带 `mcp__<server>__` 前缀） |
+| `disabled` | `true` 临时关掉 |
+
+`${VAR}` 用桥接进程的同名环境变量替换 —— **密钥写在 `~/.lark-agent/<slug>/env`，
+不要写进 `mcp.json`**（那个文件是要提交的）。
+
+> ⚠️ stdio 类型的 server **由容器内的 CLI 启动**，`command` 必须在镜像里存在。
+> 用 `npx` 每轮都要拉包（走代理很慢），常用的建议预装进 `docker/Dockerfile`。
+> 远程 `http` 类型没这个问题，能用就优先用。
+
+### B. 需要访问 PG / chatId → 加 `plugins/<name>.mts`
+
+```typescript
+import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
+import { z } from 'zod'
+import type { PluginContext } from '../plugins.mts'
+
+export const scope = 'all'          // all | group | dm
+
+export default (ctx: PluginContext) =>
+  createSdkMcpServer({
+    name: 'weather',
+    version: '1.0.0',
+    tools: [
+      tool('get_weather', '查某地天气。写清楚「什么时候该用」，模型才会主动选它。',
+        { city: z.string() },
+        async ({ city }) => ({ content: [{ type: 'text' as const, text: `${city}：晴` }] })),
+    ],
+  })
+```
+
+文件名即 server 名 → 工具全名 `mcp__weather__get_weather`。
+单个插件抛异常只跳过它，不影响其他插件和主流程。
+
+现有的三个：`plugins/schedule.mts`（定时任务）、`plugins/chatlog.mts`（群聊检索）、
+`mcp.json` 里的 `lark`（群成员 / 云文档 / 多维表格）。
+
+**改完都要 `systemctl --user restart lark-claude@<slug>`** —— 插件在 `run()` 时加载，
+但 Node 的 import 有缓存，同进程内改文件不会重新读。
+
+## 定时任务
+
+用户说「每天九点给我…」时，agent 会调 `create_scheduled_task` 登记到 PG，
+桥接每分钟扫一次，到点主动跑一轮并把结果推回会话。
+
+```
+create_scheduled_task    登记（cron 五段式，服务器本地时区）
+list_scheduled_tasks     查看，含上次执行时间和结果
+delete_scheduled_task    删除
+toggle_scheduled_task    暂停 / 恢复
+```
+
+**没用 SDK 自带的 `CronCreate`** —— 那是会话级的，唤醒的是发起它的 SDK 会话；
+而这里一条消息一个进程，cron 醒来时会话早没了，agent 也不知道该发到哪个 chat。
+
+定时任务无人值守，所以**一律拒绝工具审批**（`approve: () => false`），
+不会停在那儿等 y/n；agent 会换个办法或说明做不了。
 
 ## 日常运维
 
@@ -148,7 +235,10 @@ admin:app.enable:write     停用/启用应用（disable-app.mts）
 | `index.mts` | 收消息、鉴权、去重、命令、排队 |
 | `agent.mts` | Agent SDK 封装：会话续接、超时、审批、MCP |
 | `lark.mts` | Lark API：发消息、流式卡片、拉历史 |
-| `db.mts` | PG：存档、关键词 / 语义检索 |
+| `db.mts` | PG：群聊存档、关键词 / 语义检索、定时任务 |
+| `plugins.mts` / `plugins/` | 插件加载与自研工具 |
+| `mcp.json` | 外部 MCP 配置（社区现成的） |
+| `scheduler.mts` / `schedule-mcp.mts` | 定时任务：调度器 + 登记工具 |
 | `chatlog-mcp.mts` | 给 agent 的「查群聊记录」工具 |
 | `embed*.mts` / `embed-server.py` | 向量化 |
 | `register-app.py` | 扫码建应用 |
