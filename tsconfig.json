@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    // Node 24 原生剥离类型直接跑 .mts，不需要 emit —— 这里只做类型检查
+    "noEmit": true,
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+
+    // Lark SDK 的响应类型很松，允许在边界处显式 any，但不允许隐式
+    "noImplicitAny": true,
+    "allowJs": false,
+    "skipLibCheck": true,
+
+    // .mts 里必须写 .mts 后缀，保持和运行时一致
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true
+  },
+  "include": ["*.mts"],
+  "exclude": ["node_modules", ".venv", "docker"]
+}

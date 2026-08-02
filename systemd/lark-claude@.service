@@ -1,0 +1,47 @@
+[Unit]
+Description=Lark ↔ Claude 桥接 (%i)
+Documentation=file://__INSTALL_DIR__/BRIEF.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=__INSTALL_DIR__/start.sh
+
+# 每个 bot 的凭证。%h=$HOME, %i=实例名（即 slug）
+Environment=LARK_SLUG=%i
+EnvironmentFile=%h/.lark-agent/%i/env
+
+# 代理、数据库连接串等每台机器不同的配置，写在 ~/.lark-agent/<slug>/env 里
+# （EnvironmentFile 已在上面引入）。
+# ⚠️ 如果你的机器要走代理才能访问 api.anthropic.com，务必在那个 env 里加：
+#   HTTPS_PROXY=http://127.0.0.1:7890
+#   HTTP_PROXY=http://127.0.0.1:7890
+#   NO_PROXY=localhost,127.0.0.1
+# systemd 的环境是干净的，不会继承登录 shell 的代理变量 ——
+# 漏了会报 "403 Request not allowed"，很容易误判成凭证问题。
+
+# 新会话默认免审批（含 Bash）。风险由容器边界兜住。
+Environment=DEFAULT_YOLO=true
+# 容器模式：claude 在 lark-%i 容器里跑，看不到宿主机文件系统
+Environment=LARK_CONTAINER_MODE=true
+
+# 单轮超时兜底。maxTurns 管不了「单个网络请求挂住」——
+# 空闲超时（多久没动静就砍）+ 总时长硬顶。
+Environment=TURN_IDLE_TIMEOUT_MS=300000
+Environment=TURN_MAX_MS=1800000
+
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=20
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lark-%i
+
+[Install]
+WantedBy=default.target

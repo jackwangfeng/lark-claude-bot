@@ -1,0 +1,22 @@
+[Unit]
+Description=bge-m3 向量化服务（给 Lark 群聊语义检索用）
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=__INSTALL_DIR__/embed-start.sh
+
+Restart=always
+RestartSec=10
+# 模型加载要几十秒，别过早判死
+TimeoutStartSec=180
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lark-embed
+
+[Install]
+WantedBy=default.target

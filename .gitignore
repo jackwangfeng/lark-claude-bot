@@ -1,0 +1,14 @@
+node_modules/
+.venv/
+.old-js/
+
+# 凭证和运行时状态都在 ~/.lark-agent/ 下，本来就不在仓库里。
+# 下面几条是防手滑复制进来：
+*.env
+env
+users.json
+sessions.json
+*.log
+
+# 原始需求文档，含 app id
+BRIEF.md
