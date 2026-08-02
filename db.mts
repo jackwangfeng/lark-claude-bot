@@ -189,6 +189,102 @@ export async function semanticSearch(
   }))
 }
 
+// ── 定时任务 ──────────────────────────────────────────────────────────────
+
+export interface ScheduledTask {
+  id: number
+  chatId: string
+  botSlug: string
+  createdBy: string | null
+  title: string
+  /** 到点后喂给 agent 的指令 */
+  prompt: string
+  /** 五段式 cron，本地时区 */
+  cron: string
+  enabled: boolean
+  lastRunAt: number | null
+  lastStatus: string | null
+  lastError: string | null
+}
+
+const rowToTask = (x: Record<string, unknown>): ScheduledTask => ({
+  id: Number(x.id),
+  chatId: x.chat_id as string,
+  botSlug: x.bot_slug as string,
+  createdBy: x.created_by as string | null,
+  title: x.title as string,
+  prompt: x.prompt as string,
+  cron: x.cron as string,
+  enabled: Boolean(x.enabled),
+  lastRunAt: x.last_run_ms ? Number(x.last_run_ms) : null,
+  lastStatus: x.last_status as string | null,
+  lastError: x.last_error as string | null,
+})
+
+const TASK_COLS = `id, chat_id, bot_slug, created_by, title, prompt, cron, enabled,
+  extract(epoch from last_run_at) * 1000 AS last_run_ms, last_status, last_error`
+
+export async function createTask(t: {
+  chatId: string
+  botSlug: string
+  createdBy?: string | null
+  title: string
+  prompt: string
+  cron: string
+}): Promise<number> {
+  const r = await getPool().query(
+    `INSERT INTO scheduled_tasks (chat_id, bot_slug, created_by, title, prompt, cron)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+    [t.chatId, t.botSlug, t.createdBy ?? null, t.title, t.prompt, t.cron],
+  )
+  return Number(r.rows[0]?.id)
+}
+
+/** 某个会话的任务列表（给 agent 看的） */
+export async function listTasks(chatId: string): Promise<ScheduledTask[]> {
+  if (!DSN) return []
+  const r = await getPool().query(
+    `SELECT ${TASK_COLS} FROM scheduled_tasks WHERE chat_id = $1 ORDER BY id`,
+    [chatId],
+  )
+  return r.rows.map(rowToTask)
+}
+
+/** 调度器用：本实例所有启用的任务 */
+export async function activeTasks(botSlug: string): Promise<ScheduledTask[]> {
+  if (!DSN) return []
+  const r = await getPool().query(
+    `SELECT ${TASK_COLS} FROM scheduled_tasks WHERE bot_slug = $1 AND enabled`,
+    [botSlug],
+  )
+  return r.rows.map(rowToTask)
+}
+
+export async function deleteTask(chatId: string, id: number): Promise<boolean> {
+  // 带 chat_id 是防越权：一个会话只能删自己的任务
+  const r = await getPool().query('DELETE FROM scheduled_tasks WHERE id = $1 AND chat_id = $2', [
+    id,
+    chatId,
+  ])
+  return (r.rowCount ?? 0) > 0
+}
+
+export async function setTaskEnabled(chatId: string, id: number, enabled: boolean): Promise<boolean> {
+  const r = await getPool().query(
+    'UPDATE scheduled_tasks SET enabled = $3 WHERE id = $1 AND chat_id = $2',
+    [id, chatId, enabled],
+  )
+  return (r.rowCount ?? 0) > 0
+}
+
+/** 记录一次执行结果。last_run_at 同时是「这一分钟已经跑过」的去重依据。 */
+export async function markTaskRun(id: number, status: string, error?: string): Promise<void> {
+  await getPool().query(
+    'UPDATE scheduled_tasks SET last_run_at = now(), last_status = $2, last_error = $3 WHERE id = $1',
+    [id, status, error?.slice(0, 500) ?? null],
+  )
+}
+
 /** 关键词检索。中文没装 zhparser，用 ILIKE + trigram 索引兜住 */
 export async function searchMessages(
   chatId: string,

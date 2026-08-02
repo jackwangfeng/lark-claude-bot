@@ -11,6 +11,14 @@ PROXY="${LARK_CONTAINER_PROXY:-http://host.docker.internal:8890}"
 
 mkdir -p "$ROOT/claude" "$ROOT/workspace"
 
+# 把环境相关的注意事项放进工作区。Agent SDK 默认加载 project 设置，
+# /workspace/CLAUDE.md 每轮都会自动读到 —— 比写在 systemPrompt 里更靠前、更具体。
+# 只在不存在时拷：agent 自己往里追加的经验不能被覆盖掉。
+SKEL="$(cd "$(dirname "$0")" && pwd)/skel/CLAUDE.md"
+if [[ -f "$SKEL" && ! -f "$ROOT/workspace/CLAUDE.md" ]]; then
+  cp "$SKEL" "$ROOT/workspace/CLAUDE.md"
+fi
+
 # 凭证：每次都从宿主机同步，不能只在建容器时拷一次。
 # 宿主机的 Claude Code 会定期刷新并轮换 refresh token，容器里的旧快照会失效，
 # 表现为 "OAuth session expired and could not be refreshed"。
@@ -26,6 +34,8 @@ if ! docker container inspect "$NAME" >/dev/null 2>&1; then
     -e HTTP_PROXY="$PROXY" -e HTTPS_PROXY="$PROXY" \
     -e http_proxy="$PROXY" -e https_proxy="$PROXY" \
     -e NO_PROXY=localhost,127.0.0.1 -e no_proxy=localhost,127.0.0.1 \
+    -e NODE_USE_ENV_PROXY=1 \
+    -e TZ="${TZ:-$(cat /etc/timezone 2>/dev/null || echo Asia/Shanghai)}" \
     -v "$ROOT/claude:/home/node/.claude" \
     -v "$ROOT/workspace:/workspace" \
     --cap-drop=ALL --security-opt no-new-privileges \

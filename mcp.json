@@ -1,0 +1,49 @@
+{
+  "_说明": [
+    "社区现成的 MCP server 配置即用，不写代码。格式同 Claude Code 的 mcpServers，额外支持：",
+    "  scope    'all'（默认）| 'group' 只群聊 | 'dm' 只私聊",
+    "  deny     禁止的工具名数组（不带 mcp__<server>__ 前缀）",
+    "  disabled true 则不加载",
+    "env 里的 ${VAR} 会用桥接进程的同名环境变量替换 —— 密钥写在 ~/.lark-agent/<slug>/env，不要写这里。",
+    "⚠️ 容器模式下这些 server 由容器内的 CLI 启动，command 必须在镜像里存在（见 docker/Dockerfile）。"
+  ],
+
+  "mcpServers": {
+    "lark": {
+      "command": "lark-mcp",
+      "args": [
+        "mcp",
+        "-a", "${LARK_APP_ID}",
+        "-s", "${LARK_APP_SECRET}",
+        "-d", "https://open.larksuite.com",
+        "-t", "preset.default",
+        "-l", "zh"
+      ],
+      "scope": "group",
+      "deny": [
+        "im_v1_message_create",
+        "im_v1_chat_create",
+        "bitable_v1_app_create",
+        "bitable_v1_appTable_create",
+        "bitable_v1_appTableRecord_create",
+        "bitable_v1_appTableRecord_update",
+        "drive_v1_permissionMember_create",
+        "docx_builtin_import"
+      ]
+    },
+
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" },
+      "scope": "all",
+      "deny": [
+        "delete_repository",
+        "delete_file",
+        "merge_pull_request",
+        "create_or_update_file",
+        "push_files"
+      ]
+    }
+  }
+}

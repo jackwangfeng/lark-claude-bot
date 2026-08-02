@@ -5,6 +5,7 @@ import {
 } from './lark.mts'
 import { saveMessages, pingDb, recentMessages } from './db.mts'
 import { startEmbeddingWorker } from './embed-worker.mts'
+import { startScheduler } from './scheduler.mts'
 import {
   loadState, getChat, updateChat, run, isRunning, abort,
   CONTAINER_MODE, CONTAINER_DEFAULT_CWD, ensureContainer, dirExistsInContainer,
@@ -461,6 +462,29 @@ if (!BOT_OPEN_ID) {
     console.error('获取机器人 open_id 失败，群聊 @ 判断会退化:', errMsg(e))
   }
 }
+
+// 定时任务：到点主动跑一轮，把结果推到那个会话。
+// 复用消息处理的同一套排队 —— 定时任务和用户消息不能并发跑同一个会话。
+startScheduler(async (task) => {
+  await enqueue(task.chatId, async () => {
+    const card = await startStreamCard(task.chatId)
+    try {
+      const { text, note } = await run(task.chatId, task.prompt, {
+        defaultCwd: DEFAULT_CWD,
+        slug: SLUG,
+        isGroup: task.chatId.startsWith('oc_'),
+        onDelta: (d) => card.push(d),
+        onTool: (name, input) => card.push(`\n\n> 🔧 **${name}** ${describeTool(name, input)}\n\n`),
+        // 定时任务无人值守，不能停在那儿等审批 —— 一律拒绝，让它换个办法
+        approve: async () => false,
+      })
+      await card.finish(`⏰ **${task.title}**\n\n${text}`, note)
+    } catch (e) {
+      await card.finish(`⏰ **${task.title}**\n\n❌ ${errMsg(e)}`, 'error')
+      throw e // 让调度器记下 last_error
+    }
+  })
+})
 
 const ws = makeWSClient()
 ws.start({

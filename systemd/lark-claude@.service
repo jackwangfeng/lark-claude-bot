@@ -21,6 +21,9 @@ EnvironmentFile=%h/.lark-agent/%i/env
 #   HTTPS_PROXY=http://127.0.0.1:7890
 #   HTTP_PROXY=http://127.0.0.1:7890
 #   NO_PROXY=localhost,127.0.0.1
+#   NODE_USE_ENV_PROXY=1
+# ⚠️ NODE_USE_ENV_PROXY 容易漏：Node 的 fetch/undici 默认**不读** HTTPS_PROXY，
+# 少了它 WebFetch 会直连、超时、反复重试，表现为「抓某些网页卡死几十分钟」。
 # systemd 的环境是干净的，不会继承登录 shell 的代理变量 ——
 # 漏了会报 "403 Request not allowed"，很容易误判成凭证问题。
 

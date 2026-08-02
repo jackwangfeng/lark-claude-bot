@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { loadPlugins } from './plugins.mts'
 
 const execFileP = promisify(execFile)
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -90,55 +91,6 @@ export async function dirExistsInContainer(container: string, path: string): Pro
 }
 
 export { CONTAINER_MODE, ensureContainer, containerRoot }
-
-/**
- * 官方 Lark OpenAPI MCP —— 让 agent 能查群成员、搜文档、读多维表格。
- *
- * ⚠️ lark-mcp 的 `-t` 只认**预设名**（preset.default 之类），不认单个工具名 ——
- * 传具体工具名会导致一个都不注册，服务器 capabilities 变空，
- * 表现为 SDK 里 mcp_servers status 一直 pending、工具列表为空。
- * 所以这里用默认预设，再由下面的白名单在 SDK 层挡掉不想要的。
- */
-const LARK_MCP_PRESET = 'preset.default'
-
-/**
- * 明令禁止的写操作。
- *
- * ⚠️ allowedTools 是「额外允许」不是「唯一允许」—— 它不会禁掉没列的工具。
- * 要真正挡住必须用 disallowedTools。
- */
-const LARK_MCP_DENIED = [
-  'im_v1_message_create', // 自己发消息，会和桥接的流式卡片打架
-  'im_v1_chat_create', // 建群
-  'bitable_v1_app_create', // 多维表格的写操作
-  'bitable_v1_appTable_create',
-  'bitable_v1_appTableRecord_create',
-  'bitable_v1_appTableRecord_update',
-  'drive_v1_permissionMember_create', // 改文档权限
-  'docx_builtin_import', // 导入文档
-]
-
-function larkMcpServer(): Record<string, unknown> {
-  const { LARK_APP_ID, LARK_APP_SECRET } = process.env
-  if (!LARK_APP_ID || !LARK_APP_SECRET) return {}
-  return {
-    lark: {
-      type: 'stdio' as const,
-      // 容器镜像里预装了 lark-mcp，直接调；宿主机模式退回 npx
-      command: CONTAINER_MODE ? 'lark-mcp' : 'npx',
-      args: [
-        ...(CONTAINER_MODE ? [] : ['-y', '@larksuiteoapi/lark-mcp@0.5.1']),
-        'mcp',
-        '-a', LARK_APP_ID,
-        '-s', LARK_APP_SECRET,
-        // 国际版；国内飞书是 https://open.feishu.cn
-        '-d', process.env.LARK_MCP_DOMAIN || 'https://open.larksuite.com',
-        '-t', LARK_MCP_PRESET,
-        '-l', 'zh',
-      ],
-    },
-  }
-}
 
 // 凭证防护。注意：这是减速带，不是安全边界 —— 靠字符串匹配去拦一门图灵完备的
 // shell，绕过方式无穷（编码、改名、脚本、间接读取）。真正的解法是别把共享凭证
@@ -228,6 +180,7 @@ export async function run(
   if (running.has(chatId)) throw new Error('该会话正在运行中，先 /stop 或等它结束')
 
   const chat = getChat(chatId, defaultCwd)
+  const plugins = await loadPlugins({ chatId, slug, isGroup: Boolean(isGroup) })
 
   // 容器模式下 chat.cwd 是容器内路径；spawn wrapper 时宿主机的 cwd 必须真实存在，
   // 否则 child_process.spawn 直接 ENOENT（表现为「binary exists but failed to launch」）
@@ -310,16 +263,10 @@ export async function run(
         // cwd 变了 resume 会静默开一个新会话，这是最常见的坑
         cwd: spawnCwd,
         ...containerOpts,
-        // 群聊才给「查历史」工具：私聊的上下文本来就在会话里，不需要
-        ...(isGroup
-          ? {
-              mcpServers: {
-                chatlog: (await import('./chatlog-mcp.mts')).chatlogServer(chatId),
-                ...larkMcpServer(),
-              },
-              disallowedTools: LARK_MCP_DENIED.map((t) => `mcp__lark__${t}`),
-            }
-          : {}),
+        // 插件：plugins/*.mts（自研，能访问 PG/chatId）+ mcp.json（社区现成的）
+        // 加功能不用改这里 —— 见 plugins/README.md
+        mcpServers: plugins.mcpServers as never,
+        ...(plugins.disallowedTools.length ? { disallowedTools: plugins.disallowedTools } : {}),
         ...(sessionId ? { resume: sessionId } : {}),
         includePartialMessages: true, // 打开才有 stream_event 增量
         permissionMode: 'default',
@@ -338,6 +285,10 @@ export async function run(
             '比如 WebFetch 抓不动的大页面，改用 curl 抓下来再 grep。\n\n' +
             '踩到环境相关的坑（某类页面抓不动、某个命令在这里不可用之类），' +
             '把结论写进工作目录的 CLAUDE.md，下次会自动带上，不用重新踩。\n\n' +
+            '用户要「每天/每周定时做某事」时，一律用 mcp__schedule__create_scheduled_task 登记。' +
+            '不要用 ScheduleWakeup、CronCreate 或 claude.ai 的云端 routines —— ' +
+            '那些唤醒的是当前 SDK 会话，而这里每条消息是独立进程，会话跑完就没了，' +
+            '而且它们不知道该把结果发到哪个 Lark 会话。cron 用服务器本地时区。\n\n' +
             '你没有 AskUserQuestion 这类交互工具，调用它只会让这一轮卡死。' +
             '需要用户做选择时，直接在回复里列编号选项，让他回数字：\n' +
             '  1. 方案甲 —— 一句话说明\n' +

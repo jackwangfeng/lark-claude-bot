@@ -23,3 +23,23 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_content_trgm
   ON chat_messages USING gin (content gin_trgm_ops);
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- 定时任务。调度和推送归桥接，理解意图归 agent ——
+-- SDK 自带的 CronCreate 是「会话级」的，而桥接是一条消息一个进程，
+-- 会话早就没了，cron 醒来时没有东西可唤醒。所以必须自己存。
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+  id          bigserial PRIMARY KEY,
+  chat_id     text        NOT NULL,
+  bot_slug    text        NOT NULL,
+  created_by  text,
+  title       text        NOT NULL,
+  prompt      text        NOT NULL,
+  cron        text        NOT NULL,
+  enabled     boolean     NOT NULL DEFAULT true,
+  last_run_at timestamptz,
+  last_status text,
+  last_error  text,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_enabled
+  ON scheduled_tasks (bot_slug) WHERE enabled;
