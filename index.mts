@@ -71,6 +71,9 @@ const APPROVAL_TIMEOUT_MS = Number(process.env.APPROVAL_TIMEOUT_MS || 120_000)
 // 群聊每轮自动带上的最近几条。只保「接得上话」，更早的让模型用 mcp__chatlog__* 自己搜
 const GROUP_CONTEXT_N = Number(process.env.GROUP_CONTEXT_N || 10)
 
+// 私聊是否也入库。默认否，理由见下面 archive() 的调用处
+const ARCHIVE_DM = process.env.ARCHIVE_DM === 'true'
+
 // ── 去重：Lark 事件会重投 ──────────────────────────────────────────────────
 //
 // TTL 必须大于 Lark 补投的最长间隔，否则重连补拉（catchUp）刚处理完的消息，
@@ -421,9 +424,12 @@ async function onMessage(data: Record<string, any>): Promise<void> {
     return
   }
 
-  // 私聊放在鉴权之后才存 —— 和群聊相反。群里所有人的发言都是上下文，
-  // 但私聊里未授权的人不该在库里留下记录。
-  if (!isGroup) void archive()
+  // 私聊默认不入库 —— 上下文本来就在 Claude Code 的会话里，而且落盘
+  // （~/.claude/projects/**/*.jsonl，agent 在容器里能直接 rg，连自己的回复都在），
+  // 再存一份 PG 是重复的，还把私聊内容放进了共享库。
+  // 开 ARCHIVE_DM=true 才存；那时放在鉴权之后 —— 和群聊相反，
+  // 群里所有人的发言都是上下文，但私聊里未授权的人不该在库里留记录。
+  if (!isGroup && ARCHIVE_DM) void archive()
 
   const raw = extractText(message)
   let text = stripMentions(raw, mentions)
