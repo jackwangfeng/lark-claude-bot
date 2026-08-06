@@ -1,7 +1,7 @@
 // Lark ↔ Claude 桥接：收消息 → 鉴权/去重/命令 → 排队 → agent.run → 流式卡片
 import {
   makeWSClient, eventDispatcher, sendText, startStreamCard, react, getBotInfo,
-  getRecentUserText, getMessage, fetchGroupSince, renderMessages, senderName,
+  getRecentUserText, getMessage, fetchGroupSince, renderMessages, senderName, downloadResource,
   fetchMissedEvents,
 } from './lark.mts'
 import { saveMessages, pingDb, recentMessages } from './db.mts'
@@ -12,6 +12,7 @@ import {
   CONTAINER_MODE, CONTAINER_DEFAULT_CWD, ensureContainer, dirExistsInContainer,
 } from './agent.mts'
 import { existsSync, statSync, readFileSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
 import { resolve, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -148,6 +149,88 @@ function extractText(message: Record<string, any>): string {
     return out.join(' ')
   }
   return ''
+}
+
+interface Attachment {
+  /** 下载用的 key。图片是 image_key，其余是 file_key */
+  key: string
+  /** messageResource 接口的 type 参数，只认 'image' / 'file' */
+  api: 'image' | 'file'
+  /** 给用户看的类别 */
+  kind: string
+  name?: string
+}
+
+/**
+ * 从消息里抠出附件。图片、文件、音频、视频，以及富文本里内嵌的图。
+ * 贴纸(sticker)不要 —— 那是表情，下载下来没意义还占地方。
+ */
+function extractAttachments(message: Record<string, any>): Attachment[] {
+  let c: Record<string, any>
+  try {
+    c = JSON.parse(message.content)
+  } catch {
+    return []
+  }
+  const t = message.message_type
+  if (t === 'image' && c.image_key) return [{ key: c.image_key, api: 'image', kind: '图片' }]
+  if (t === 'file' && c.file_key)
+    return [{ key: c.file_key, api: 'file', kind: '文件', name: c.file_name }]
+  if (t === 'audio' && c.file_key) return [{ key: c.file_key, api: 'file', kind: '语音' }]
+  if (t === 'media' && c.file_key)
+    return [{ key: c.file_key, api: 'file', kind: '视频', name: c.file_name }]
+  if (t === 'post') {
+    // 富文本可以图文混排，把内嵌的图也抠出来
+    const out: Attachment[] = []
+    const walk = (n: unknown): void => {
+      if (Array.isArray(n)) return n.forEach(walk)
+      if (n && typeof n === 'object') {
+        const o = n as Record<string, unknown>
+        if (o.tag === 'img' && typeof o.image_key === 'string')
+          out.push({ key: o.image_key, api: 'image', kind: '图片' })
+        Object.values(o).forEach(walk)
+      }
+    }
+    walk(c)
+    return out
+  }
+  return []
+}
+
+/** 纯附件消息没有文本，存档时用它占位，免得回看历史断一截 */
+function placeholderOf(message: Record<string, any>): string {
+  const a = extractAttachments(message)
+  if (!a.length) return ''
+  return a.map((x) => (x.name ? `[${x.kind}: ${x.name}]` : `[${x.kind}]`)).join(' ')
+}
+
+// 附件落在工作目录下的 uploads/。
+// ⚠️ 容器模式下要写宿主机路径，但告诉 Claude 的必须是容器内路径 —— 它在容器里跑。
+const UPLOAD_HOST_DIR = CONTAINER_MODE
+  ? join(homedir(), '.lark-agent', 'containers', SLUG, 'workspace', 'uploads')
+  : join(DEFAULT_CWD, 'uploads')
+const UPLOAD_SEEN_DIR = CONTAINER_MODE ? `${CONTAINER_DEFAULT_CWD}/uploads` : UPLOAD_HOST_DIR
+
+/** 下载附件，返回给 Claude 看的路径。单个失败只跳过它，不影响这一轮 */
+async function saveAttachments(
+  messageId: string,
+  atts: Attachment[],
+): Promise<Array<{ path: string; kind: string }>> {
+  await mkdir(UPLOAD_HOST_DIR, { recursive: true })
+  const out: Array<{ path: string; kind: string }> = []
+  for (const [i, a] of atts.entries()) {
+    // 文件名带上 message_id：同名文件互相覆盖会让 Claude 读到上一次的内容
+    const safe = (a.name || '').replace(/[^\w.\-一-龥]/g, '_').slice(-60)
+    const ext = safe.includes('.') ? '' : a.api === 'image' ? '.jpg' : '.bin'
+    const fname = `${messageId.slice(-12)}_${i}${safe ? `_${safe}` : ''}${ext}`
+    try {
+      await downloadResource(messageId, a.key, a.api, join(UPLOAD_HOST_DIR, fname))
+      out.push({ path: `${UPLOAD_SEEN_DIR}/${fname}`, kind: a.kind })
+    } catch (e) {
+      console.error(`[附件] ${a.kind} 下载失败:`, errMsg(e))
+    }
+  }
+  return out
 }
 
 function stripMentions(text: string, mentions: Array<{ key?: string }> = []): string {
@@ -290,27 +373,32 @@ async function onMessage(data: Record<string, any>): Promise<void> {
   const mentions = message.mentions || []
   const users = loadUsers()
 
+  const archive = async (): Promise<void> => {
+    // 存清理过 mention 占位符的文本：原文里是 "@_user_1 你好"，
+    // 存进去会污染检索（搜不到、也读不懂谁在跟谁说话）。
+    // 纯图片/文件消息没有文本，存个占位符 —— 不然回看历史时会凭空断一截。
+    const body = stripMentions(extractText(message), mentions).trim() || placeholderOf(message)
+    if (!body || !String(openId).startsWith('ou_')) return
+    await saveMessages(SLUG, [
+      {
+        messageId: message.message_id,
+        chatId,
+        senderId: openId,
+        // 私聊取不到群成员名单，退回白名单里的显示名，免得历史里全是「用户a10e」
+        senderName:
+          (await senderName(chatId, openId)) ??
+          (isGroup ? undefined : senderIds.map((id) => users.get(id)).find(Boolean)),
+        msgType: message.message_type ?? 'text',
+        content: body,
+        sentAt: Number(message.create_time) || Date.now(),
+      },
+    ]).catch((e) => console.error('[存档] 写入失败:', errMsg(e)))
+  }
+
   // 群消息一律先存 —— 应用有 im:message.group_msg:readonly，没被 @ 的消息也会推过来。
   // 存储和「要不要回应」是两件事：存是为了长期记忆，回应才看 @。
   // 放在授权检查之前：群里所有人的发言都是上下文，不该因为发言人不在白名单就丢掉。
-  if (isGroup) {
-    // 存清理过 mention 占位符的文本：原文里是 "@_user_1 你好"，
-    // 存进去会污染检索（搜不到、也读不懂谁在跟谁说话）
-    const body = stripMentions(extractText(message), mentions).trim()
-    if (body && String(openId).startsWith('ou_')) {
-      saveMessages(SLUG, [
-        {
-          messageId: message.message_id,
-          chatId,
-          senderId: openId,
-          senderName: await senderName(chatId, openId),
-          msgType: message.message_type ?? 'text',
-          content: body,
-          sentAt: Number(message.create_time) || Date.now(),
-        },
-      ]).catch((e) => console.error('[存档] 写入失败:', errMsg(e)))
-    }
-  }
+  if (isGroup) void archive()
 
   // 授权模型按会话类型分：
   //   私聊 —— 必须在 users.json 里（可用范围在私聊场景是硬约束，这里再兜一层）
@@ -333,8 +421,29 @@ async function onMessage(data: Record<string, any>): Promise<void> {
     return
   }
 
+  // 私聊放在鉴权之后才存 —— 和群聊相反。群里所有人的发言都是上下文，
+  // 但私聊里未授权的人不该在库里留下记录。
+  if (!isGroup) void archive()
+
   const raw = extractText(message)
   let text = stripMentions(raw, mentions)
+
+  // 附件：下载到工作目录，把路径给 Claude，它自己会 Read（图片能直接看）
+  const atts = extractAttachments(message)
+  if (atts.length) {
+    const saved = await saveAttachments(message.message_id, atts)
+    if (saved.length) {
+      console.log(`[附件] ${chatId} 收到 ${saved.length} 个：${saved.map((s) => s.kind).join('、')}`)
+      text =
+        (text || '用户只发了附件，没有附带文字。先看看是什么，再回应。') +
+        '\n\n【用户发来的附件，已下载到本地】\n' +
+        saved.map((s) => `- ${s.kind}：${s.path}`).join('\n') +
+        '\n（图片直接用 Read 工具看；文档按后缀选合适的方式读）'
+    } else if (!text) {
+      await sendText(chatId, '附件下载失败了，你再发一次或者改用文字描述吧')
+      return
+    }
+  }
 
   // 光 @ 一下、没带内容：接着上一句。
   // 优先用「被回复的那条」，其次用会话里最近一条人发的消息。

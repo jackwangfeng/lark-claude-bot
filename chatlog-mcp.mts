@@ -25,7 +25,7 @@ export function chatlogServer(chatId: string) {
     tools: [
       tool(
         'search_chat_history',
-        '在本群的历史聊天记录里按关键词检索。用于回忆很久以前说过的事。',
+        '在本会话的历史聊天记录里按关键词检索。用于回忆很久以前说过的事。',
         {
           keyword: z.string().describe('关键词，支持中文，按子串匹配'),
           limit: z.number().int().min(1).max(100).default(30).describe('最多返回多少条'),
@@ -36,7 +36,7 @@ export function chatlogServer(chatId: string) {
       ),
       tool(
         'semantic_search_chat_history',
-        '在本群历史里按「意思」检索，不需要词面命中。' +
+        '在本会话历史里按「意思」检索，不需要词面命中。' +
           '适合「大家之前讨论过哪些跟成本有关的事」这类模糊问题；' +
           '要找确定的词（人名、产品名、报错），用 search_chat_history 更准。',
         {
@@ -69,7 +69,7 @@ export function chatlogServer(chatId: string) {
       ),
       tool(
         'recent_chat_history',
-        '取本群最近的聊天记录（时间正序）。用于了解最近发生了什么。',
+        '取本会话最近的聊天记录（时间正序）。用于了解最近发生了什么。',
         {
           limit: z.number().int().min(1).max(200).default(50).describe('取最近多少条'),
         },

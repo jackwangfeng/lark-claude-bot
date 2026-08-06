@@ -2,5 +2,5 @@
 import { chatlogServer } from '../chatlog-mcp.mts'
 import type { PluginContext } from '../plugins.mts'
 
-export const scope = 'group'
+export const scope = 'all'
 export default (ctx: PluginContext) => chatlogServer(ctx.chatId)
