@@ -582,6 +582,10 @@ const ws = makeWSClient({
     catchUp(at).catch((e) => console.error('[补拉] 失败:', errMsg(e)))
   },
 })
+// 后台勾了「接收消息」权限就会连带推送已读回执、表情回应这些。用不上，
+// 但不注册处理器的话 SDK 每条都 warn 一行，把真正要看的日志淹掉（实测 5 天 232 行）。
+const ignore = () => {}
+
 ws.start({
   eventDispatcher: eventDispatcher({
     'im.message.receive_v1': async (data) => {
@@ -591,6 +595,19 @@ ws.start({
         console.error('处理消息出错:', e)
       }
     },
+
+    // 被拉进群：立刻记下会话类型，这样断线补拉对新群第一条消息就生效，
+    // 不用等到有人先发过一句话才知道这是群聊。
+    'im.chat.member.bot.added_v1': async (data) => {
+      const chatId = data?.chat_id
+      if (!chatId) return
+      console.log(`[会话] 被拉进群 ${chatId}`)
+      await updateChat(chatId, { chatType: 'group' }).catch(() => {})
+    },
+
+    'im.message.reaction.created_v1': ignore, // 有人给消息加表情
+    'im.message.reaction.deleted_v1': ignore, // 取消表情
+    'im.message.message_read_v1': ignore, // 已读回执
   }),
 })
 
