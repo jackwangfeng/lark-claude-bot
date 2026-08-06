@@ -2,12 +2,13 @@
 import {
   makeWSClient, eventDispatcher, sendText, startStreamCard, react, getBotInfo,
   getRecentUserText, getMessage, fetchGroupSince, renderMessages, senderName,
+  fetchMissedEvents,
 } from './lark.mts'
 import { saveMessages, pingDb, recentMessages } from './db.mts'
 import { startEmbeddingWorker } from './embed-worker.mts'
 import { startScheduler } from './scheduler.mts'
 import {
-  loadState, getChat, updateChat, run, isRunning, abort,
+  loadState, getChat, updateChat, run, isRunning, abort, knownChats,
   CONTAINER_MODE, CONTAINER_DEFAULT_CWD, ensureContainer, dirExistsInContainer,
 } from './agent.mts'
 import { existsSync, statSync, readFileSync } from 'node:fs'
@@ -67,10 +68,16 @@ const DEFAULT_CWD = CONTAINER_MODE
 const APPROVAL_TIMEOUT_MS = Number(process.env.APPROVAL_TIMEOUT_MS || 120_000)
 
 // ── 去重：Lark 事件会重投 ──────────────────────────────────────────────────
+//
+// TTL 必须大于 Lark 补投的最长间隔，否则重连补拉（catchUp）刚处理完的消息，
+// 会在 Lark 的退避时钟到点后再被投一次，用户看到机器人把同一句话回两遍。
+// 实测补投档位是 ~317s 和 ~3917s（约 65 分钟），所以留到 2 小时。
+// 代价只是一个 message_id 的 Map，量级可以忽略。
+const SEEN_TTL_MS = Number(process.env.LARK_SEEN_TTL_MS || 2 * 3600_000)
 const seen = new Map<string, number>()
 function isDuplicate(id: string): boolean {
   const now = Date.now()
-  for (const [k, t] of seen) if (now - t > 600_000) seen.delete(k)
+  for (const [k, t] of seen) if (now - t > SEEN_TTL_MS) seen.delete(k)
   if (seen.has(id)) return true
   seen.set(id, now)
   return false
@@ -271,6 +278,12 @@ async function onMessage(data: Record<string, any>): Promise<void> {
 
   if (isDuplicate(message.message_id)) return
 
+  // 记下会话类型，断线重连补拉时要用（拉历史的接口不返回 chat_type）
+  const known = getChat(chatId, DEFAULT_CWD)
+  if (known.chatType !== (isGroup ? 'group' : 'p2p')) {
+    updateChat(chatId, { chatType: isGroup ? 'group' : 'p2p' }).catch(() => {})
+  }
+
   const mentions = message.mentions || []
   const users = loadUsers()
 
@@ -301,7 +314,17 @@ async function onMessage(data: Record<string, any>): Promise<void> {
   //   群聊 —— 群成员名单即授权名单，任何人 @ 都服务；但群成员能进的只有这个群自己的容器
   if (isGroup) {
     if (!mentionedBot(mentions)) return
-  } else if (!senderIds.some((id) => users.has(id))) {
+  } else if (senderIds.some((id) => users.has(id))) {
+    // 记下这个私聊对面是谁 —— 补拉时只有 open_id，靠它认人（见下）
+    if (openId && known.peerOpenId !== openId) {
+      updateChat(chatId, { peerOpenId: openId }).catch(() => {})
+    }
+  } else if (data.__catchup && openId && openId === known.peerOpenId) {
+    // 补拉回来的私聊消息只带 open_id（拉历史的接口不返回 union_id），
+    // 而白名单推荐配 union_id，直接比对必然落空。
+    // 这里退回到「这个会话上次通过鉴权的就是这个 open_id」，只认它本人，
+    // 不放宽给任意人。代价：白名单里移除某人后，补拉窗口内（≤2h）仍可能服务他一次。
+  } else {
     // 从这条日志里挑一个填进 users.json。推荐用 union_id —— 换 bot 也不用重配。
     console.log(`[忽略] 未授权私聊 ${JSON.stringify(sender?.sender_id || {})}`)
     return
@@ -463,6 +486,22 @@ if (!BOT_OPEN_ID) {
   }
 }
 
+// chatType 是后加的字段，老的 sessions.json 里没有，而断线补拉要靠它区分群聊/私聊。
+// 只回填能确定的那一半：群消息才会入库，所以「库里有这个 chat 的消息」⇒ 群聊。
+// 反过来「库里没有」不能推出私聊（可能只是刚拉进群还没人说话），那种就留空，
+// 等下一条消息到达时自然写上 —— 宁可补拉暂时不覆盖，也不能把群当私聊处理。
+for (const { chatId, chatType } of knownChats({ includeUnknown: true })) {
+  if (chatType) continue
+  try {
+    if ((await recentMessages(chatId, 1)).length) {
+      await updateChat(chatId, { chatType: 'group' })
+      console.log(`[会话] 回填 ${chatId} = 群聊`)
+    }
+  } catch {
+    /* 没配 PG 就算了，靠下一条消息自愈 */
+  }
+}
+
 // 定时任务：到点主动跑一轮，把结果推到那个会话。
 // 复用消息处理的同一套排队 —— 定时任务和用户消息不能并发跑同一个会话。
 startScheduler(async (task) => {
@@ -486,7 +525,63 @@ startScheduler(async (task) => {
   })
 })
 
-const ws = makeWSClient()
+// ── 断线补拉 ──────────────────────────────────────────────────────────────
+//
+// 长连接掉线期间 Lark 推不过来的事件不会丢，但补投走的是它自己的退避时钟
+// （实测 ~5 分钟 / ~65 分钟两档），而且不会因为我们重连就立刻冲刷队列。
+// 所以重连后主动把这段时间的消息拉回来，别让用户干等。
+// 已经处理过的会被 isDuplicate 挡掉，重复拉是安全的。
+const PROCESS_START = Date.now()
+let disconnectedAt: number | null = null
+
+// 掉线是静默的：真正断开的时刻早于「发现掉线」的时刻，所以往前多回溯一点。
+// pong 看门狗把这个差值压在 ping 间隔(120s) + pingTimeout(30s) 以内。
+const DETECT_LAG_MS = Number(process.env.LARK_DETECT_LAG_MS || 180_000)
+
+async function catchUp(noticedAt: number): Promise<void> {
+  // 起点有两个下界，取更晚的那个：
+  //   SEEN_TTL     —— 超出去重窗口的消息重放会造成重复回复
+  //   PROCESS_START —— 重启后 seen 是空的，更早的消息可能已被上个进程回过
+  const floor = Math.max(PROCESS_START, Date.now() - SEEN_TTL_MS)
+  const since = Math.max(noticedAt - DETECT_LAG_MS, floor)
+  const chats = knownChats()
+  if (!chats.length) return
+
+  let found = 0
+  for (const { chatId, chatType } of chats) {
+    try {
+      const events = await fetchMissedEvents(chatId, since, chatType === 'group')
+      for (const ev of events) {
+        if (seen.has(ev.message?.message_id)) continue
+        found++
+        console.log(`[补拉] ${chatId} 追回漏掉的消息 ${ev.message?.message_id}`)
+        await onMessage({ ...ev, __catchup: true }).catch((e) =>
+          console.error('[补拉] 处理失败:', errMsg(e)),
+        )
+      }
+    } catch (e) {
+      console.error(`[补拉] ${chatId} 拉取失败:`, errMsg(e))
+    }
+  }
+  console.log(
+    `[补拉] 完成，扫了 ${chats.length} 个会话（回溯到 ${new Date(since).toLocaleTimeString()}），` +
+      `追回 ${found} 条`,
+  )
+}
+
+const ws = makeWSClient({
+  onReconnecting: () => {
+    // 只记第一次：重连循环里会反复触发
+    disconnectedAt ??= Date.now()
+    console.warn('[ws] 掉线，开始重连')
+  },
+  onReconnected: () => {
+    const at = disconnectedAt ?? Date.now()
+    disconnectedAt = null
+    console.log('[ws] 已重连')
+    catchUp(at).catch((e) => console.error('[补拉] 失败:', errMsg(e)))
+  },
+})
 ws.start({
   eventDispatcher: eventDispatcher({
     'im.message.receive_v1': async (data) => {

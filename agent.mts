@@ -21,6 +21,10 @@ export interface ChatState {
   yolo: boolean
   /** 群聊：上次已处理到的 message_id，用于增量拉取 */
   lastSeenId?: string | null
+  /** 会话类型。断线重连补拉时要用 —— im.message.list 不返回 chat_type */
+  chatType?: 'p2p' | 'group'
+  /** 私聊对面那个人的 open_id，上次通过鉴权时记下。补拉时只有 open_id，靠它认人 */
+  peerOpenId?: string
 }
 
 export interface RunOptions {
@@ -136,6 +140,19 @@ export async function loadState() {
 async function saveState() {
   await mkdir(dirname(STATE_FILE), { recursive: true })
   await writeFile(STATE_FILE, JSON.stringify(state, null, 2))
+}
+
+/**
+ * 已知会话列表，断线重连补拉时用来决定去拉哪些 chat。
+ * 默认只返回类型已知的 —— 类型不确定就没法正确套用鉴权规则（群聊看 @，私聊看白名单）。
+ * includeUnknown 供启动时回填用。
+ */
+export function knownChats(
+  { includeUnknown = false } = {},
+): Array<{ chatId: string; chatType?: 'p2p' | 'group' }> {
+  return Object.entries(state)
+    .filter(([, s]) => includeUnknown || s.chatType)
+    .map(([chatId, s]) => ({ chatId, chatType: s.chatType }))
 }
 
 export function getChat(chatId: string, defaultCwd: string): ChatState {

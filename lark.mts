@@ -16,12 +16,32 @@ export const client = new lark.Client({
   domain: lark.Domain.Lark,
 })
 
-export function makeWSClient() {
+/**
+ * 长连接。默认配置下断线是「静默」的 —— 服务端不发 close，客户端只能等
+ * TCP 层报错，实测掉线到发现最长过了 18 分钟。这段时间 Lark 推不过来的事件
+ * 会进它自己的重试队列，按 ~5 分钟 / ~65 分钟两档补投，用户看到的就是
+ * 「发了消息半天不理，过一会儿突然回了」。
+ *
+ * pingTimeout 打开 SDK 的 pong 看门狗：发完 ping 起一个定时器，任何入站帧
+ * 都算活证据并取消它，超时就 terminate 掉套接字触发标准重连流程。
+ * 服务端下发的 ping 间隔是 120s，所以发现掉线的上限 ≈ 120 + pingTimeout。
+ *
+ * handshakeTimeoutMs 管另一种卡死：走代理 / NAT 时握手可能永远挂着不返回，
+ * SDK 默认不设客户端超时。
+ */
+export function makeWSClient(hooks: {
+  onReady?: () => void
+  onReconnecting?: () => void
+  onReconnected?: () => void
+} = {}) {
   return new lark.WSClient({
     appId: LARK_APP_ID!,
     appSecret: LARK_APP_SECRET!,
     domain: lark.Domain.Lark,
     loggerLevel: lark.LoggerLevel.info,
+    wsConfig: { pingTimeout: Number(process.env.LARK_WS_PING_TIMEOUT || 30) },
+    handshakeTimeoutMs: Number(process.env.LARK_WS_HANDSHAKE_TIMEOUT_MS || 20_000),
+    ...hooks,
   })
 }
 
@@ -154,6 +174,73 @@ export async function fetchGroupSince(
 
   out.reverse() // 时间正序
   return { messages: out, newestId }
+}
+
+/**
+ * 补拉：把某个会话在 sinceMs 之后的人类消息，还原成 im.message.receive_v1
+ * 事件的形状，好直接喂回 onMessage 走完整流程（鉴权 / 命令 / 排队都不用重写）。
+ *
+ * 用途是断线重连后追回漏掉的消息 —— Lark 虽然也会重投，但走的是它自己的
+ * 退避时钟（~5min / ~65min），不会因为我们重连就立刻冲刷队列。
+ *
+ * ⚠️ 两个接口的字段形状不一样，这里要转换：
+ *   list 事件   mentions[].id 是字符串 + 单独的 id_type
+ *   推送事件    mentions[].id 是对象 { open_id, union_id, user_id }
+ * mentionedBot() 读的是 .id.open_id，不转的话群里永远判定成「没 @ 我」。
+ */
+export async function fetchMissedEvents(
+  chatId: string,
+  sinceMs: number,
+  isGroup: boolean,
+  { maxPages = 4, pageSize = 50 }: { maxPages?: number; pageSize?: number } = {},
+): Promise<Array<Record<string, any>>> {
+  const out: Array<Record<string, any>> = []
+  let pageToken: string | undefined
+
+  for (let i = 0; i < maxPages; i++) {
+    const r = await client.im.message.list({
+      params: {
+        container_id_type: 'chat',
+        container_id: chatId,
+        // Lark 这个接口的 start_time 是「秒」，不是毫秒
+        start_time: String(Math.floor(sinceMs / 1000)),
+        sort_type: 'ByCreateTimeAsc',
+        page_size: pageSize,
+        ...(pageToken ? { page_token: pageToken } : {}),
+      },
+    })
+
+    for (const m of r?.data?.items || []) {
+      if (!m.message_id || m.deleted) continue
+      const senderId = String(m.sender?.id || '')
+      // 只要人发的：机器人自己发的卡片喂回去会变成自问自答
+      if (!senderId.startsWith('ou_') || m.sender?.sender_type === 'app') continue
+
+      out.push({
+        sender: { sender_id: { open_id: senderId }, sender_type: m.sender?.sender_type },
+        message: {
+          message_id: m.message_id,
+          parent_id: m.parent_id,
+          chat_id: m.chat_id || chatId,
+          chat_type: isGroup ? 'group' : 'p2p',
+          message_type: m.msg_type,
+          content: m.body?.content,
+          create_time: m.create_time,
+          mentions: (m.mentions || []).map((x: Record<string, any>) => ({
+            key: x.key,
+            name: x.name,
+            id: { [x.id_type || 'open_id']: x.id },
+          })),
+        },
+      })
+    }
+
+    if (!r?.data?.has_more) break
+    pageToken = r?.data?.page_token
+    if (!pageToken) break
+  }
+
+  return out
 }
 
 /** 取单个发言人的名字，用于实时存档。取不到返回 undefined，让 DB 存 null。 */
