@@ -67,6 +67,9 @@ const DEFAULT_CWD = CONTAINER_MODE
 
 const APPROVAL_TIMEOUT_MS = Number(process.env.APPROVAL_TIMEOUT_MS || 120_000)
 
+// 群聊每轮自动带上的最近几条。只保「接得上话」，更早的让模型用 mcp__chatlog__* 自己搜
+const GROUP_CONTEXT_N = Number(process.env.GROUP_CONTEXT_N || 10)
+
 // ── 去重：Lark 事件会重投 ──────────────────────────────────────────────────
 //
 // TTL 必须大于 Lark 补投的最长间隔，否则重连补拉（catchUp）刚处理完的消息，
@@ -392,15 +395,24 @@ async function onMessage(data: Record<string, any>): Promise<void> {
     // 上下文一律从 PG 读 —— 消息在到达时就实时入库了，不依赖 Lark 的历史 API。
     // 这很重要：拉历史需要 im:message.group_msg 权限，很多 bot 没有；
     // 而只要能收到消息（im:message.group_msg:readonly）就能存，所以 PG 里的数据是全的。
+    // 只塞够「接得上话」的量，深度让它自己搜。
+    // 塞多少是个取舍：塞得多每条群消息都烧 token，而且窗口固定，
+    // 有时嫌少（要翻几个月前）有时嫌多（就问一句无关的）。
+    // 既然已经给了 mcp__chatlog__*（关键词 / 语义 / 取更多最近的），
+    // 「要翻多久以前」这个判断本就该交给模型，桥接只保底最近这几句的连贯性。
     try {
-      const rows = await recentMessages(chatId, 40)
+      const rows = await recentMessages(chatId, GROUP_CONTEXT_N + 1)
       // 最后一条是刚 @ 我的这句，已经在 text 里了
       const ctx = rows
         .filter((m) => m.messageId !== message.message_id)
+        .slice(-GROUP_CONTEXT_N)
         .map((m) => `${m.senderName || `用户${m.senderId.slice(-4)}`}: ${m.content}`)
       if (ctx.length) {
         prompt =
-          `【群里最近的对话，了解上下文即可，不必逐条回应】\n${ctx.join('\n')}\n\n` +
+          `【群里最近 ${ctx.length} 条对话，了解上下文即可，不必逐条回应】\n${ctx.join('\n')}\n\n` +
+          '【更早的没有贴出来。需要时自己查：mcp__chatlog__search_chat_history 按关键词、' +
+          'mcp__chatlog__semantic_search_chat_history 按意思、' +
+          'mcp__chatlog__recent_chat_history 取更多最近的】\n\n' +
           `【下面是 @ 你的这条，回应这个】\n${text}`
       }
       console.log(`[群上下文] ${chatId} 从库里取了 ${ctx.length} 条`)
