@@ -216,6 +216,15 @@ npx tsc --noEmit                                  # 类型检查
 图片、文件、语音、视频会下载到工作目录的 `uploads/`，把路径写进 prompt 交给 agent，
 它自己决定怎么读（图片直接 `Read`，文档按后缀处理）。富文本里内嵌的图也会一并抠出来。
 
+**连发的多个附件会合并成一轮。** Lark 是「一张图一条消息」，发 3 张就是 3 个事件 ——
+不合并会触发 3 轮 Claude：又慢又贵，而且模型每轮只看得到一张，没法对比着说。
+纯附件消息先攒 `ATTACH_DEBOUNCE_MS`（默认 2.5 秒），期间补了文字就立刻连附件一起发。
+纯文字消息不受影响，**不会为此多等** 2.5 秒。
+
+判断逻辑抽在 `attach.mts` 的 `planAttach()` 里，`node test-attach.mts` 可跑单测 ——
+分支容易想漏，尤其「先发几张图、再打一句话」那条：那句话本身不带附件，
+但必须把攒着的图一起带走。
+
 ⚠️ 容器模式下**写的是宿主机路径、给 agent 的是容器内路径**
 （`~/.lark-agent/<slug>/…/workspace/uploads` ↔ `/workspace/uploads`）——
 搞反了 agent 会报文件不存在。文件名带 `message_id` 前缀，避免同名互相覆盖。
@@ -246,6 +255,7 @@ systemd 模板里的（改 unit 或加 drop-in）：
 | `LARK_SEEN_TTL_MS` | `7200000` | 消息去重窗口，必须大于 Lark 最长补投间隔 |
 | `GROUP_CONTEXT_N` | `10` | 群聊每轮自动带上的最近几条，见下 |
 | `ARCHIVE_DM` | `false` | 私聊也入库 + 向量化，见下 |
+| `ATTACH_DEBOUNCE_MS` | `2500` | 连发的附件攒多久合成一轮 |
 
 ## 群聊上下文：塞多少 vs 让它自己搜
 

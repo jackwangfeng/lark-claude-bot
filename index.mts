@@ -5,6 +5,7 @@ import {
   fetchMissedEvents,
 } from './lark.mts'
 import { saveMessages, pingDb, recentMessages } from './db.mts'
+import { planAttach, type SavedFile } from './attach.mts'
 import { startEmbeddingWorker } from './embed-worker.mts'
 import { startScheduler } from './scheduler.mts'
 import {
@@ -214,13 +215,19 @@ const UPLOAD_HOST_DIR = CONTAINER_MODE
   : join(DEFAULT_CWD, 'uploads')
 const UPLOAD_SEEN_DIR = CONTAINER_MODE ? `${CONTAINER_DEFAULT_CWD}/uploads` : UPLOAD_HOST_DIR
 
+// 连发的附件先攒着，安静下来再一起跑。
+// Lark 是「一张图一条消息」，连发 3 张就是 3 个事件 —— 不合并的话会触发 3 轮
+// Claude：又慢又贵，而且模型每轮只看得到一张，没法对比着说。
+const ATTACH_DEBOUNCE_MS = Number(process.env.ATTACH_DEBOUNCE_MS || 2500)
+const attachBuf = new Map<string, { files: SavedFile[]; timer?: NodeJS.Timeout }>()
+
 /** 下载附件，返回给 Claude 看的路径。单个失败只跳过它，不影响这一轮 */
 async function saveAttachments(
   messageId: string,
   atts: Attachment[],
-): Promise<Array<{ path: string; kind: string }>> {
+): Promise<SavedFile[]> {
   await mkdir(UPLOAD_HOST_DIR, { recursive: true })
-  const out: Array<{ path: string; kind: string }> = []
+  const out: SavedFile[] = []
   for (const [i, a] of atts.entries()) {
     // 文件名带上 message_id：同名文件互相覆盖会让 Claude 读到上一次的内容
     const safe = (a.name || '').replace(/[^\w.\-一-龥]/g, '_').slice(-60)
@@ -365,7 +372,9 @@ async function onMessage(data: Record<string, any>): Promise<void> {
     console.log(`[sender] ${JSON.stringify(sender?.sender_id || {})}`)
   }
 
-  if (isDuplicate(message.message_id)) return
+  // 合并附件时会拿同一条 message_id 重新进来一次，那轮要跳过去重和存档 ——
+  // 否则会被自己第一次留下的记录挡掉，或者把同一条消息存两遍。
+  if (!data.__attachFlush && isDuplicate(message.message_id)) return
 
   // 记下会话类型，断线重连补拉时要用（拉历史的接口不返回 chat_type）
   const known = getChat(chatId, DEFAULT_CWD)
@@ -401,7 +410,7 @@ async function onMessage(data: Record<string, any>): Promise<void> {
   // 群消息一律先存 —— 应用有 im:message.group_msg:readonly，没被 @ 的消息也会推过来。
   // 存储和「要不要回应」是两件事：存是为了长期记忆，回应才看 @。
   // 放在授权检查之前：群里所有人的发言都是上下文，不该因为发言人不在白名单就丢掉。
-  if (isGroup) void archive()
+  if (isGroup && !data.__attachFlush) void archive()
 
   // 授权模型按会话类型分：
   //   私聊 —— 必须在 users.json 里（可用范围在私聊场景是硬约束，这里再兜一层）
@@ -429,26 +438,60 @@ async function onMessage(data: Record<string, any>): Promise<void> {
   // 再存一份 PG 是重复的，还把私聊内容放进了共享库。
   // 开 ARCHIVE_DM=true 才存；那时放在鉴权之后 —— 和群聊相反，
   // 群里所有人的发言都是上下文，但私聊里未授权的人不该在库里留记录。
-  if (!isGroup && ARCHIVE_DM) void archive()
+  if (!isGroup && ARCHIVE_DM && !data.__attachFlush) void archive()
 
   const raw = extractText(message)
   let text = stripMentions(raw, mentions)
 
-  // 附件：下载到工作目录，把路径给 Claude，它自己会 Read（图片能直接看）
-  const atts = extractAttachments(message)
-  if (atts.length) {
-    const saved = await saveAttachments(message.message_id, atts)
-    if (saved.length) {
-      console.log(`[附件] ${chatId} 收到 ${saved.length} 个：${saved.map((s) => s.kind).join('、')}`)
-      text =
-        (text || '用户只发了附件，没有附带文字。先看看是什么，再回应。') +
-        '\n\n【用户发来的附件，已下载到本地】\n' +
-        saved.map((s) => `- ${s.kind}：${s.path}`).join('\n') +
-        '\n（图片直接用 Read 工具看；文档按后缀选合适的方式读）'
-    } else if (!text) {
+  // 附件：下载到工作目录，把路径给 Claude，它自己会 Read（图片能直接看）。
+  //
+  // 连发的多个附件要合并成一轮 —— Lark 是「一张图一条消息」，发 3 张就是 3 个事件。
+  // 不合并会触发 3 轮 Claude：又慢又贵，而且模型每轮只看得到一张，没法对比着说。
+  // 纯附件消息先攒进缓冲区等一等；期间补了文字就立刻连附件一起发出去
+  //（"几张图 + 一句话" 是最常见的发法）。
+  let saved: SavedFile[] = (data.__attachments as SavedFile[] | undefined) ?? []
+  if (!data.__attachFlush) {
+    const atts = extractAttachments(message)
+    const got = atts.length ? await saveAttachments(message.message_id, atts) : []
+    if (atts.length && !got.length && !text) {
       await sendText(chatId, '附件下载失败了，你再发一次或者改用文字描述吧')
       return
     }
+
+    const buf = attachBuf.get(chatId)
+    const plan = planAttach({
+      pending: buf?.files,
+      incoming: got,
+      hasText: Boolean(text),
+      isCmd: text.startsWith('/'),
+    })
+
+    if (plan.action !== 'pass') {
+      if (buf?.timer) clearTimeout(buf.timer)
+      if (plan.action === 'wait') {
+        const files = plan.files
+        const timer = setTimeout(() => {
+          attachBuf.delete(chatId)
+          console.log(`[附件] ${chatId} 合并 ${files.length} 个为一轮`)
+          void onMessage({ ...data, __attachFlush: true, __attachments: files }).catch((e) =>
+            console.error('[附件] 合并处理失败:', errMsg(e)),
+          )
+        }, ATTACH_DEBOUNCE_MS)
+        attachBuf.set(chatId, { files, timer })
+        return
+      }
+      attachBuf.delete(chatId)
+      saved = plan.files
+    }
+  }
+
+  if (saved.length) {
+    console.log(`[附件] ${chatId} 本轮 ${saved.length} 个：${saved.map((s) => s.kind).join('、')}`)
+    text =
+      (text || '用户发来了附件，没有附带文字。先看看是什么，再回应。') +
+      '\n\n【用户发来的附件，已下载到本地】\n' +
+      saved.map((s) => `- ${s.kind}：${s.path}`).join('\n') +
+      '\n（图片直接用 Read 工具看；文档按后缀选合适的方式读）'
   }
 
   // 光 @ 一下、没带内容：接着上一句。
