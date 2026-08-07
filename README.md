@@ -272,6 +272,7 @@ systemd 模板里的（改 unit 或加 drop-in）：
 | `LARK_SEEN_TTL_MS` | `7200000` | 消息去重窗口，必须大于 Lark 最长补投间隔 |
 | `GROUP_CONTEXT_N` | `10` | 群聊每轮自动带上的最近几条，见下 |
 | `ARCHIVE_DM` | `false` | 私聊也入库 + 向量化，见下 |
+| `LARK_ACCOUNT_PRIMARY` | `main` | 账号池的主力号，见下 |
 | `ATTACH_DEBOUNCE_MS` | `2500` | 连发的附件攒多久合成一轮 |
 
 ## 群聊上下文：塞多少 vs 让它自己搜
@@ -282,6 +283,38 @@ systemd 模板里的（改 unit 或加 drop-in）：
 这么分是因为固定窗口两头不讨好：塞多了每条群消息都烧 token，塞少了又接不上；
 而「要翻多久以前」本来就该由模型判断 —— 它有全量历史的检索工具，比一个写死的数字准。
 群里话题密集、经常要联系上文的，把这个值调大即可。
+
+## 多账号池（可选）
+
+几个 Claude 账号轮着用：一个撞额度上限自动切下一个，主力号恢复了自动切回。
+
+```bash
+./add-account.sh main            # 把宿主机当前登录的号存进池子
+./add-account.sh acc2 --login    # 先登录另一个号再存（会覆盖宿主机登录状态）
+./add-account.sh --list          # 看池子
+systemctl --user restart 'lark-claude@*'
+```
+
+池子在 `~/.lark-agent/accounts/`，一个号一个 json（就是 `.credentials.json`）。
+只有一个号时行为和不启用完全一样。Lark 里发 `/status` 能看到池子现状。
+
+选号是**每轮挑优先级最高的可用号**，不是「当前号能用就一直用」——
+后者一旦退到备用号就再也回不去，主力号额度会白白闲置。
+主力号默认叫 `main`，`LARK_ACCOUNT_PRIMARY` 可改。全部限流时退到最早恢复的那个。
+
+额度信号取自 SDK 的 `rate_limit_event`（`status` / `resetsAt` / `rateLimitType` /
+`utilization`），是结构化的，不用猜错误字符串。日志里能看到 `[额度] 已用 N%`。
+
+### ⚠️ token 轮换
+
+**刷新会轮换 refresh token，旧的立即作废。** 所以谁刷新了谁必须写回池子，
+否则另一边下次拿到的是废 token（表现为 `OAuth session expired`，这坑踩过两次）：
+
+- **容器侧** —— `agent.mts` 的 `writeBack()` 每轮结束自动写回
+- **宿主机侧** —— 你自己敲 `claude` 也会刷新，靠 `sync-host-cred.sh` 兜底，
+  已装成 systemd timer 每 10 分钟跑一次（比 `expiresAt`，谁新用谁）
+
+宿主机和容器登**不同的号**就没这个问题；登同一个号则依赖上面两个机制。
 
 ## 掉线与补拉
 
