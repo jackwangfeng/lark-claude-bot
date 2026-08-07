@@ -6,6 +6,7 @@ import {
 } from './lark.mts'
 import { saveMessages, pingDb, recentMessages } from './db.mts'
 import { planAttach, type SavedFile } from './attach.mts'
+import { poolStatus } from './accounts.mts'
 import { startEmbeddingWorker } from './embed-worker.mts'
 import { startScheduler } from './scheduler.mts'
 import {
@@ -299,7 +300,10 @@ async function handleCommand(chatId: string, text: string): Promise<boolean> {
           `会话：${chat.sessionId ? '`' + chat.sessionId + '`' : '（新会话）'}`,
           `yolo：${chat.yolo ? 'on ⚠️' : 'off'}`,
           `运行中：${isRunning(chatId) ? '是' : '否'}`,
-        ].join('\n'),
+          await poolStatus().then((p) => (p ? `\n**账号池**\n\`\`\`\n${p}\n\`\`\`` : '')),
+        ]
+          .filter(Boolean)
+          .join('\n'),
       )
       return true
 

@@ -1,5 +1,6 @@
 // Claude Agent SDK 封装：会话续接、流式增量、权限审批、中断
 import { query } from '@anthropic-ai/claude-agent-sdk'
+import type { SDKRateLimitInfo } from '@anthropic-ai/claude-agent-sdk'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -7,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { loadPlugins } from './plugins.mts'
+import { currentCredentialPath, currentName, markLimited, writeBack } from './accounts.mts'
 
 const execFileP = promisify(execFile)
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -40,6 +42,8 @@ export interface RunResult {
   text: string
   sessionId: string | null
   note: string
+  /** 非空表示这一轮撞了额度上限，上层可以换号重试 */
+  limited?: { resetsAt?: number; kind?: string } | null
 }
 
 // 每个 bot 一份状态，否则多实例会同时写同一个文件互相覆盖
@@ -57,7 +61,12 @@ function containerRoot(slug: string): string {
 }
 
 async function ensureContainer(slug: string): Promise<string> {
-  const { stdout } = await execFileP(ENSURE_SH, [slug], { timeout: 180_000 })
+  // 启用多账号池时，指定这一轮用哪个号的凭证；没启用则 env 为空，ensure.sh 走默认
+  const cred = await currentCredentialPath().catch(() => null)
+  const { stdout } = await execFileP(ENSURE_SH, [slug], {
+    timeout: 180_000,
+    env: { ...process.env, ...(cred ? { LARK_CRED_SRC: cred } : {}) },
+  })
   return stdout.trim()
 }
 
@@ -192,6 +201,40 @@ export function abort(chatId: string): boolean {
 export async function run(
   chatId: string,
   prompt: string,
+  opts: RunOptions,
+): Promise<RunResult> {
+  // 撞额度上限就换号重跑。号池里最多有几个，所以最多重试这么多次。
+  // 重跑用同一个 sessionId（会话文件在容器里，跟账号无关），上下文不丢。
+  const tried: string[] = []
+  for (;;) {
+    const acct = await currentName().catch(() => null)
+    const r = await runOnce(chatId, prompt, opts)
+    if (!r.limited) return r
+
+    if (acct) tried.push(acct)
+    const next = acct ? await markLimited(acct, r.limited.resetsAt) : null
+    if (!next || tried.includes(next)) {
+      // 没号可换了（或者换来换去都是试过的）—— 把话说清楚，别只丢一句报错
+      const when = r.limited.resetsAt
+        ? new Date(r.limited.resetsAt).toLocaleString('zh-CN', { hour12: false })
+        : '稍后'
+      return {
+        ...r,
+        text:
+          `⛔ 额度用完了${tried.length > 1 ? `（${tried.length} 个号都满了）` : ''}，` +
+          `${when}恢复。\n\n` +
+          (r.text && !r.text.startsWith('⛔') ? `这一轮已完成的部分：\n${r.text}` : ''),
+        note: 'rate_limited',
+      }
+    }
+    console.log(`[账号池] 换到 ${next}，重跑这一轮`)
+    opts.onTool?.('账号切换', { from: acct, to: next })
+  }
+}
+
+async function runOnce(
+  chatId: string,
+  prompt: string,
   { onDelta, onTool, approve, defaultCwd, slug, isGroup }: RunOptions,
 ): Promise<RunResult> {
   if (running.has(chatId)) throw new Error('该会话正在运行中，先 /stop 或等它结束')
@@ -219,6 +262,9 @@ export async function run(
       },
     }
   }
+  // 记下这一轮用的是哪个号：撞上限时要标记它，结束时要把刷新过的凭证写回它
+  const acct = await currentName().catch(() => null)
+
   const abortController = new AbortController()
   running.set(chatId, abortController)
 
@@ -226,6 +272,8 @@ export async function run(
   let collected = ''
   let sessionId = chat.sessionId
   let note = ''
+  /** 撞额度上限时由 rate_limit_event 填上，跑完交给上层决定换号重试 */
+  let limited: { resetsAt?: number; kind?: string } | null = null
 
   // 超时兜底。maxTurns 管的是轮数，管不了「单个网络请求挂住」——
   // 实测遇到过 WebFetch 卡在代理上 20 分钟，进程 1% CPU 睡在那，
@@ -323,6 +371,22 @@ export async function run(
           if (msg.subtype === 'init' && msg.session_id) sessionId = msg.session_id
           break
 
+        // 额度信号是结构化的，不用去猜错误文本。
+        // rejected = 这个号用满了，记下来让上层换号重试。
+        case 'rate_limit_event': {
+          const info = (msg as { rate_limit_info?: SDKRateLimitInfo }).rate_limit_info
+          if (info?.status === 'rejected') {
+            limited = { resetsAt: info.resetsAt, kind: info.rateLimitType }
+            console.warn(
+              `[额度] ${chatId} 撞上限 ${info.rateLimitType ?? '?'}` +
+                (info.resetsAt ? ` 恢复于 ${new Date(info.resetsAt).toLocaleString('zh-CN')}` : ''),
+            )
+          } else if (info?.status === 'allowed_warning' && typeof info.utilization === 'number') {
+            console.log(`[额度] ${chatId} 已用 ${Math.round(info.utilization)}%`)
+          }
+          break
+        }
+
         case 'stream_event': {
           const ev = msg.event
           if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
@@ -379,7 +443,13 @@ export async function run(
     if (abortController.signal.aborted) await killTurnInContainer(container, turnId)
     running.delete(chatId)
     if (sessionId && sessionId !== chat.sessionId) await updateChat(chatId, { sessionId })
+
+    // 把这一轮可能刷新过的凭证写回账号池。
+    // 刷新会轮换 refresh token，不写回的话下次切回这个号就是过期状态。
+    if (CONTAINER_MODE && acct) {
+      await writeBack(acct, join(containerRoot(slug), 'claude', '.credentials.json'))
+    }
   }
 
-  return { text: finalText || collected, sessionId, note }
+  return { text: finalText || collected, sessionId, note, limited }
 }

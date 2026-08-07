@@ -54,6 +54,24 @@ export LARK_PG_DSN=postgres://user:pass@127.0.0.1:5432/lark_agent   # 可选
 扫完自动完成：邮箱转 union_id → 写凭证 → 加应用可用范围 → 注册 systemd → 启动验活。
 后台不用点，权限已通过 `addons` 预置。
 
+⚠️ **扫码流程不能选租户**，它跟着你客户端/浏览器的当前登录会话走。名下有多个租户时，
+应用会建到「当前那个」，而不是你想要的那个 —— 换域名、换链接都没用（`--intl` 只是
+少绕一跳，同样不影响租户归属）。实测还遇到过退出登录后一直报「链接已失效」。
+
+**多租户就别扫码了，直接后台建**，五分钟：
+
+1. 登录目标租户的开放平台 → 创建企业自建应用 → 添加机器人能力（有「智能体」选它）
+2. 权限管理勾这 9 个：`im:message`、`im:message.p2p_msg:readonly`、
+   `im:message.group_at_msg:readonly`、`im:message.group_msg:readonly`、
+   `im:message.group_msg`、`im:chat.members:read`、`contact:user.base:readonly`、
+   `im:message.reactions:write_only`、`im:resource`
+3. 事件订阅：方式选**长连接**（不是 webhook，这套没有公网回调地址），
+   事件加 `im.message.receive_v1`
+4. 创建版本并发布 —— **权限不发版不生效**
+5. 拿 App ID / Secret 走 `./new-bot.sh <slug> <app_id> <secret>`
+
+扫码那套只是为了省掉第 2~4 步的点点点，单租户时才值得用。
+
 细节和排错见 [SETUP.md](SETUP.md)。
 
 ## 语义检索（可选）

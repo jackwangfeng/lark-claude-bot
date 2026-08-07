@@ -23,7 +23,10 @@ fi
 # 宿主机的 Claude Code 会定期刷新并轮换 refresh token，容器里的旧快照会失效，
 # 表现为 "OAuth session expired and could not be refreshed"。
 # 宿主机通常会提前刷新，所以同步过来的 access token 够跑完一轮，容器一般不需要自己刷新。
-SRC="$HOME/.claude/.credentials.json"
+#
+# 启用多账号池时（~/.lark-agent/accounts/ 里有号），由桥接经 LARK_CRED_SRC
+# 指定这一轮用哪个号；没启用就还是用宿主机自己那份。
+SRC="${LARK_CRED_SRC:-$HOME/.claude/.credentials.json}"
 if [[ -f "$SRC" ]]; then
   install -m 600 "$SRC" "$ROOT/claude/.credentials.json"
 fi
