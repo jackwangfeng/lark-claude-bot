@@ -58,20 +58,18 @@ export LARK_PG_DSN=postgres://user:pass@127.0.0.1:5432/lark_agent   # 可选
 应用会建到「当前那个」，而不是你想要的那个 —— 换域名、换链接都没用（`--intl` 只是
 少绕一跳，同样不影响租户归属）。实测还遇到过退出登录后一直报「链接已失效」。
 
-**多租户就别扫码了，直接后台建**，比想象的简单：
+**多租户就别扫码了，直接后台建**，三步：
 
 1. 登录目标租户的开放平台 → **创建「智能体」**
-2. 事件订阅：方式选**长连接**（不是 webhook，这套没有公网回调地址），
-   事件加 `im.message.receive_v1`
-3. 创建版本并发布
-4. 拿 App ID / Secret 走 `./new-bot.sh <slug> <app_id> <secret>`
+2. 创建版本并发布
+3. 拿 App ID / Secret 走 `./new-bot.sh <slug> <app_id> <secret>`
 
-**权限不用手动勾** —— 智能体类型自带这套 IM 能力。实测逐个验证过：
+**权限和事件订阅都不用配** —— 智能体类型自带。实测逐个 API 验证过：
 `im:chat.members:read`（查群成员）、`im:message.group_msg:readonly`（拉群历史）、
 `contact:user.base:readonly`（查用户）、`im:message.reactions:write_only`（加表情）
-全部开箱可用，收发消息更不用说。
+全部开箱可用；长连接事件推送也是现成的，收发消息直接就通。
 
-所以扫码脚本的 `addons` 预置在这条路上意义不大，它主要省的是选类型之后的零星配置。
+所以扫码脚本的 `addons` 预置基本没用了 —— 它省的那些配置，智能体本来就带。
 
 细节和排错见 [SETUP.md](SETUP.md)。
 
