@@ -76,6 +76,10 @@ const GROUP_CONTEXT_N = Number(process.env.GROUP_CONTEXT_N || 10)
 // 私聊是否也入库。默认否，理由见下面 archive() 的调用处
 const ARCHIVE_DM = process.env.ARCHIVE_DM === 'true'
 
+// 已经提示过「你不在白名单」的人。任何人都能私聊 bot，每条都回就成了回声墙。
+// 只在内存里，进程重启后会重新提示一次 —— 无所谓，总比无限回复强。
+const notifiedUnauth = new Set<string>()
+
 // ── 去重：Lark 事件会重投 ──────────────────────────────────────────────────
 //
 // TTL 必须大于 Lark 补投的最长间隔，否则重连补拉（catchUp）刚处理完的消息，
@@ -434,6 +438,26 @@ async function onMessage(data: Record<string, any>): Promise<void> {
   } else {
     // 从这条日志里挑一个填进 users.json。推荐用 union_id —— 换 bot 也不用重配。
     console.log(`[忽略] 未授权私聊 ${JSON.stringify(sender?.sender_id || {})}`)
+
+    // 告诉对方该找谁、报哪个 ID —— 干等着不回，只会让人以为 bot 坏了。
+    // ⚠️ 每人只提示一次：任何人都能私聊这个 bot，每条都回就成了免费的回声墙，
+    // 有人一直发就一直回。进程重启后会重新提示一次，可以接受。
+    // union_id 拿不到就退回 open_id —— 它也能填进白名单（只是换 bot 要重配），
+    // 总比什么都不说强。去重键用 chatId 兜底，保证「每人只提示一次」不会失效。
+    const uid = sender?.sender_id?.union_id || sender?.sender_id?.open_id
+    if (!notifiedUnauth.has(uid || chatId)) {
+      notifiedUnauth.add(uid || chatId)
+      await sendText(
+        chatId,
+        uid
+          ? '你还不在这个机器人的白名单里。\n\n' +
+              '把下面这行发给管理员，加进去就能用了：\n\n' +
+              `\`${uid}\`\n\n` +
+              '（加完即刻生效，不用重启，也不用重新加好友）'
+          : '你还不在这个机器人的白名单里，而且没能取到你的 ID。\n\n' +
+              '找管理员看一下服务日志里的 `[忽略] 未授权私聊` 那行。',
+      ).catch(() => {})
+    }
     return
   }
 
