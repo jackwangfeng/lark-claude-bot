@@ -30,6 +30,15 @@ export interface ChatState {
 }
 
 export interface RunOptions {
+  /**
+   * 会话键，默认用 chatId。定时任务要传自己的键（如 `${chatId}#task7`），
+   * 否则每次触发都 append 进用户的聊天会话 —— 喝水提醒跑了 101 次，
+   * 会话文件涨到 18MB，之后每轮普通对话都要把这堆重发一遍，单轮成本从
+   * $0.25 飙到 $4.49。
+   */
+  sessionKey?: string
+  /** 每次从头开始，不 resume。定时任务用 —— 上一次的结果对这一次没用 */
+  fresh?: boolean
   onDelta?: (text: string) => void
   onTool?: (name: string, input: Record<string, unknown>) => void
   approve: (toolName: string, input: Record<string, unknown>) => Promise<boolean>
@@ -235,11 +244,14 @@ export async function run(
 async function runOnce(
   chatId: string,
   prompt: string,
-  { onDelta, onTool, approve, defaultCwd, slug, isGroup }: RunOptions,
+  { onDelta, onTool, approve, defaultCwd, slug, isGroup, sessionKey, fresh }: RunOptions,
 ): Promise<RunResult> {
-  if (running.has(chatId)) throw new Error('该会话正在运行中，先 /stop 或等它结束')
+  // 会话按 key 存；发消息仍然发到 chatId。两者分开，定时任务才能有自己的上下文。
+  const key = sessionKey || chatId
+  if (running.has(key)) throw new Error('该会话正在运行中，先 /stop 或等它结束')
 
-  const chat = getChat(chatId, defaultCwd)
+  const chat = getChat(key, defaultCwd)
+  if (fresh) chat.sessionId = null
   const plugins = await loadPlugins({ chatId, slug, isGroup: Boolean(isGroup) })
 
   // 容器模式下 chat.cwd 是容器内路径；spawn wrapper 时宿主机的 cwd 必须真实存在，
@@ -266,7 +278,7 @@ async function runOnce(
   const acct = await currentName().catch(() => null)
 
   const abortController = new AbortController()
-  running.set(chatId, abortController)
+  running.set(key, abortController)
 
   let finalText = ''
   let collected = ''
@@ -441,8 +453,8 @@ async function runOnce(
     clearTimeout(hardTimer)
     // 只有中断过才需要回收；正常结束时子进程自己退了
     if (abortController.signal.aborted) await killTurnInContainer(container, turnId)
-    running.delete(chatId)
-    if (sessionId && sessionId !== chat.sessionId) await updateChat(chatId, { sessionId })
+    running.delete(key)
+    if (sessionId && sessionId !== chat.sessionId) await updateChat(key, { sessionId })
 
     // 把这一轮可能刷新过的凭证写回账号池。
     // 刷新会轮换 refresh token，不写回的话下次切回这个号就是过期状态。

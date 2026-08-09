@@ -702,11 +702,19 @@ for (const { chatId, chatType } of knownChats({ includeUnknown: true })) {
 
 // 定时任务：到点主动跑一轮，把结果推到那个会话。
 // 复用消息处理的同一套排队 —— 定时任务和用户消息不能并发跑同一个会话。
+//
+// ⚠️ 会话键用 `${chatId}#task<id>`，不是 chatId：
+// 早先两者共用，每次触发都 append 进用户的聊天会话。喝水提醒跑了 101 次，
+// 会话文件涨到 18MB，之后每轮普通对话都要把这堆重发一遍 —— 单轮成本从
+// $0.25 飙到 $4.49，而且用户的上下文里全是「💧 该喝水啦」。
+// fresh 则让每次从头跑：上一次的简报对这一次没有参考价值，留着只是负担。
 startScheduler(async (task) => {
   await enqueue(task.chatId, async () => {
     const card = await startStreamCard(task.chatId)
     try {
       const { text, note } = await run(task.chatId, task.prompt, {
+        sessionKey: `${task.chatId}#task${task.id}`,
+        fresh: true,
         defaultCwd: DEFAULT_CWD,
         slug: SLUG,
         isGroup: task.chatId.startsWith('oc_'),
