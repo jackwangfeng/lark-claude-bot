@@ -10,6 +10,9 @@ ENV_FILE="$HOME/.lark-agent/$SLUG/env"
 set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
+# env 文件里没有 LARK_SLUG（那是 systemd 模板按 %i 注入的），这里补上 ——
+# doctor.mts 靠它找 users.json、查可用范围、读实例日志。不传的话那几项静默跳过。
+LARK_SLUG="$SLUG"
 set +a
 
 echo "── 体检 $SLUG ($LARK_APP_ID) ──"
