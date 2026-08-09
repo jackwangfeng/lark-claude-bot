@@ -294,6 +294,9 @@ async function runOnce(
         LARK_CONTAINER: container,
         LARK_WORKDIR: chat.cwd,
         LARK_TURN_ID: turnId,
+        // 容器内 larkimg 发图回本会话要用；宿主机版是反查 sessions.json，
+        // 那文件容器里看不到，只能显式传
+        LARK_CHAT_ID: chatId,
       },
     }
   }

@@ -70,6 +70,18 @@ gh pr list / gh issue list
 
 机器人头像、名称这类应用级配置只能在后台改，你没有对应工具 —— 直说改不了并指路即可。
 
+## 发图片给用户
+
+生成了图表 / 截图 / 设计稿，**要用 `larkimg` 发出去**：
+
+```bash
+larkimg /workspace/chart.png
+```
+
+不要在回复里写 `![图](/workspace/x.png)` —— 那是容器内路径，Lark 渲染不了，
+用户看到的是一段没用的 markdown。chat_id 会自动解析成当前会话，不用传。
+上限 10MB，超了先压。
+
 ## 环境
 
 - 出网走代理，`NODE_USE_ENV_PROXY=1` 已设，curl/wget/fetch 都能直接用
