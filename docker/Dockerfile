@@ -12,7 +12,18 @@ ENV HTTP_PROXY=${HTTP_PROXY} HTTPS_PROXY=${HTTPS_PROXY} \
 # jq/unzip 是处理抓下来的内容时常用的。
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git ripgrep less procps \
-      curl wget jq unzip \
+      curl wget jq unzip gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# gh：GitHub 官方 CLI。比 github MCP 直接 —— agent 本来就会用 git/gh，
+# 不用为了读个文件去记一套 mcp__github__* 工具名，也省掉每轮的工具定义开销。
+# GITHUB_TOKEN 由运行期注入，gh 自动认这个环境变量，不用额外登录。
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
 # lark-mcp 预装进镜像：容器里跑 npx 要现拉包，代理慢的时候每轮对话都要等

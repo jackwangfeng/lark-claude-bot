@@ -178,7 +178,7 @@ if (slug) {
 {
   const shared = [
     { key: 'LARK_PG_DSN', hard: true, why: '定时任务 + 群聊长期记忆；缺了 agent 登记定时任务会失败' },
-    { key: 'GITHUB_TOKEN', hard: false, why: 'mcp.json 里的 github MCP；缺了每次调用 401' },
+    { key: 'GITHUB_TOKEN', hard: false, why: '容器内 gh 的认证；缺了 agent 用不了 GitHub' },
   ]
   const missing = shared.filter((s) => !process.env[s.key])
   if (missing.length) {

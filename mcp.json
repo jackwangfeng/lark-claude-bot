@@ -30,20 +30,6 @@
         "drive_v1_permissionMember_create",
         "docx_builtin_import"
       ]
-    },
-
-    "github": {
-      "type": "http",
-      "url": "https://api.githubcopilot.com/mcp/",
-      "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" },
-      "scope": "all",
-      "deny": [
-        "delete_repository",
-        "delete_file",
-        "merge_pull_request",
-        "create_or_update_file",
-        "push_files"
-      ]
     }
   }
 }

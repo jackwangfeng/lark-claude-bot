@@ -9,10 +9,13 @@ set -euo pipefail
 # （一个容器服务多个会话，不能无差别 pkill claude）
 # LARK_APP_ID/SECRET 给容器内的 lark-mcp 用（查群成员、搜文档等）。
 # 注意 MCP server 是 CLI 在容器里 spawn 的，所以凭证必须进容器。
+# GITHUB_TOKEN 给 gh 用 —— gh 自动认这个变量，不用 gh auth login。
+# （原来走远程 github MCP 时 token 在宿主机侧展开，不需要进容器；换 gh 就必须传。）
 exec docker exec -i \
   -w "${LARK_WORKDIR:-/workspace}" \
   -e "LARK_TURN_ID=${LARK_TURN_ID:-}" \
   -e "LARK_APP_ID=${LARK_APP_ID:-}" \
   -e "LARK_APP_SECRET=${LARK_APP_SECRET:-}" \
   -e "LARK_MCP_DOMAIN=${LARK_MCP_DOMAIN:-}" \
+  -e "GITHUB_TOKEN=${GITHUB_TOKEN:-}" \
   "$LARK_CONTAINER" claude "$@"

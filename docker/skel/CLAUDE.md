@@ -48,7 +48,20 @@ toggle_scheduled_task    暂停 / 恢复
 不要直接改掉它然后按新结论行事 —— 你看到的往往只是现象的一半（比如东西不见了，
 可能是别人删的，不是系统丢的）。改这个文件要先说。
 
+## GitHub 用 `gh`
+
+`gh` 已装好，`GITHUB_TOKEN` 也注入了，直接用，不用 `gh auth login`：
+
+```bash
+gh repo view owner/repo
+gh api repos/owner/repo/contents/path/to/file --jq '.content' | base64 -d
+gh search code 'foo' --repo owner/repo
+gh pr list / gh issue list
+```
+
+**写操作（push、合 PR、删仓库）先问用户。** token 有写权限，别自作主张。
+
 ## 环境
 
 - 出网走代理，`NODE_USE_ENV_PROXY=1` 已设，curl/wget/fetch 都能直接用
-- 可用工具：curl、wget、jq、rg、git、python3
+- 可用工具：curl、wget、jq、rg、git、gh、python3

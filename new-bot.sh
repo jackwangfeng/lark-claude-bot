@@ -54,7 +54,7 @@ EOF
 # 优先取环境变量；没有就从已有实例的 env 里抄（同一台机器共用同一份）。
 SHARED_KEYS=(
   LARK_PG_DSN        # 定时任务 + 群聊长期记忆
-  GITHUB_TOKEN       # mcp.json 里的 github MCP
+  GITHUB_TOKEN       # 容器内 gh 的认证
   HTTPS_PROXY        # 访问 api.anthropic.com 要代理的话
   HTTP_PROXY
   NO_PROXY

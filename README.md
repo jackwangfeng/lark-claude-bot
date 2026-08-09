@@ -99,15 +99,20 @@ systemctl --user enable --now lark-embed
 ```json
 {
   "mcpServers": {
-    "github": {
+    "weather": {
       "type": "http",
-      "url": "https://api.githubcopilot.com/mcp/",
-      "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" },
-      "deny": ["delete_repository", "merge_pull_request"]
+      "url": "https://example.com/mcp/",
+      "headers": { "Authorization": "Bearer ${WEATHER_TOKEN}" },
+      "deny": ["delete_station"]
     }
   }
 }
 ```
+
+> 加之前先想想**有没有 CLI 能直接干这事**。GitHub 就是个例子：原来挂了个远程
+> github MCP，后来发现 `gh` 更直接 —— agent 本来就会用命令行，不用记一套
+> `mcp__github__*` 工具名，也省掉每轮的工具定义开销。装进镜像 + 注入
+> `GITHUB_TOKEN` 就完事（`gh` 自动认这个变量，不用 `gh auth login`）。
 
 支持 `stdio` / `http` / `sse` 三种传输。额外字段：
 
@@ -148,8 +153,10 @@ export default (ctx: PluginContext) =>
 文件名即 server 名 → 工具全名 `mcp__weather__get_weather`。
 单个插件抛异常只跳过它，不影响其他插件和主流程。
 
-现有的三个：`plugins/schedule.mts`（定时任务）、`plugins/chatlog.mts`（群聊检索）、
+现有的：`plugins/schedule.mts`（定时任务）、`plugins/chatlog.mts`（会话检索）、
 `mcp.json` 里的 `lark`（群成员 / 云文档 / 多维表格）。
+
+GitHub 不走 MCP —— 容器里装了 `gh`，`GITHUB_TOKEN` 运行期注入，agent 直接用命令行。
 
 **改完都要 `systemctl --user restart lark-claude@<slug>`** —— 插件在 `run()` 时加载，
 但 Node 的 import 有缓存，同进程内改文件不会重新读。
