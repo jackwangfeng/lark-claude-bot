@@ -53,6 +53,8 @@ export interface RunResult {
   note: string
   /** 非空表示这一轮撞了额度上限，上层可以换号重试 */
   limited?: { resetsAt?: number; kind?: string } | null
+  /** 这一轮发出去的上下文 token 数 */
+  contextTokens?: number
 }
 
 // 每个 bot 一份状态，否则多实例会同时写同一个文件互相覆盖
@@ -307,6 +309,8 @@ async function runOnce(
   let note = ''
   /** 撞额度上限时由 rate_limit_event 填上，跑完交给上层决定换号重试 */
   let limited: { resetsAt?: number; kind?: string } | null = null
+  /** 这一轮实际发出去的上下文大小，用于提醒用户该压缩了 */
+  let contextTokens = 0
 
   // 超时兜底。maxTurns 管的是轮数，管不了「单个网络请求挂住」——
   // 实测遇到过 WebFetch 卡在代理上 20 分钟，进程 1% CPU 睡在那，
@@ -441,6 +445,14 @@ async function runOnce(
               .filter(Boolean)
               .join(' · ')
           }
+          // 上下文有多大 —— 缓存读/写的 token 数就是这一轮实际发出去的前缀长度。
+          // 自动压缩指望不上：它按窗口占比触发（~90%），而 1M 窗口意味着要涨到
+          // 90 万 tok 才动手，那时每轮早就贵得离谱了。所以自己盯着，到阈值提醒用户。
+          {
+            const u = msg.usage as unknown as Record<string, number> | undefined
+            const ctx = (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0)
+            if (ctx > 0) contextTokens = ctx
+          }
           break
       }
     }
@@ -477,5 +489,5 @@ async function runOnce(
     }
   }
 
-  return { text: finalText || collected, sessionId, note, limited }
+  return { text: finalText || collected, sessionId, note, limited, contextTokens }
 }

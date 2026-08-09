@@ -96,6 +96,25 @@ function isDuplicate(id: string): boolean {
   return false
 }
 
+// 会话大到一定程度就提醒。
+//
+// 自动压缩指望不上：它按上下文窗口占比触发（~90%），而窗口有 100 万 token，
+// 意味着要涨到 90 万才动手 —— 那时每轮光是读缓存就 $1.35，重写要 $16.9。
+// 实测五个实例、几百轮对话，一次都没触发过。
+//
+// 只提醒不自动压：压缩会丢细节，该不该压用户比我们清楚。
+const CONTEXT_WARN_TOKENS = Number(process.env.CONTEXT_WARN_TOKENS || 150_000)
+
+/** 每个会话上一轮的上下文大小，给 /status 看 */
+const lastContext = new Map<string, number>()
+
+function contextHint(tok?: number): string {
+  if (!tok || tok < CONTEXT_WARN_TOKENS) return ''
+  // 缓存命中时约 $1.5/M，没命中要 $18.75/M —— 用命中价估，说少不说多
+  const perTurn = (tok / 1e6) * 1.5
+  return `上下文 ${Math.round(tok / 1000)}k ≈ $${perTurn.toFixed(2)}/轮，建议 /compact 或 /new`
+}
+
 // ── 按 chat 串行排队 ──────────────────────────────────────────────────────
 const queues = new Map<string, Promise<unknown>>()
 function enqueue(chatId: string, fn: () => Promise<void>): Promise<unknown> {
@@ -304,6 +323,10 @@ async function handleCommand(chatId: string, text: string): Promise<boolean> {
           `会话：${chat.sessionId ? '`' + chat.sessionId + '`' : '（新会话）'}`,
           `yolo：${chat.yolo ? 'on ⚠️' : 'off'}`,
           `运行中：${isRunning(chatId) ? '是' : '否'}`,
+          lastContext.has(chatId)
+            ? `上下文：${Math.round(lastContext.get(chatId)! / 1000)}k tok` +
+              (lastContext.get(chatId)! >= CONTEXT_WARN_TOKENS ? '  ⚠️ 建议 `/compact`' : '')
+            : '',
           await poolStatus().then((p) => (p ? `\n**账号池**\n\`\`\`\n${p}\n\`\`\`` : '')),
         ]
           .filter(Boolean)
@@ -640,7 +663,7 @@ async function onMessage(data: Record<string, any>): Promise<void> {
     const t0 = Date.now()
     const card = await startStreamCard(chatId)
     try {
-      const { text: final, note } = await run(chatId, prompt, {
+      const { text: final, note, contextTokens } = await run(chatId, prompt, {
         defaultCwd: DEFAULT_CWD,
         slug: SLUG,
         isGroup,
@@ -652,8 +675,12 @@ async function onMessage(data: Record<string, any>): Promise<void> {
         },
         approve: (name, input) => askApproval(chatId, name, input),
       })
-      await card.finish(final, note)
-      console.log(`[完成] ${chatId} ${((Date.now() - t0) / 1000).toFixed(1)}s ${note || ''}`)
+      if (contextTokens) lastContext.set(chatId, contextTokens)
+      await card.finish(final, [note, contextHint(contextTokens)].filter(Boolean).join(' · '))
+      console.log(
+        `[完成] ${chatId} ${((Date.now() - t0) / 1000).toFixed(1)}s ${note || ''}` +
+          (contextTokens ? ` · 上下文 ${Math.round(contextTokens / 1000)}k` : ''),
+      )
     } catch (e) {
       console.error(`[失败] ${chatId}:`, errMsg(e))
       await card.finish(`❌ ${errMsg(e)}`, 'error')
