@@ -44,6 +44,24 @@ cat > "$ROOT/env" <<EOF
 LARK_APP_ID=$APP_ID
 LARK_APP_SECRET=$APP_SECRET
 EOF
+
+# PG：定时任务和群聊长期记忆都要它。不继承的话新实例会「看着正常但功能缺一半」——
+# agent 调 create_scheduled_task 只会拿到「未配置 LARK_PG_DSN」，用户以为登记成功了。
+# 优先用环境变量；没有就从已有实例里抄一份（同一台机器共用一个库）。
+DSN="${LARK_PG_DSN:-}"
+if [[ -z "$DSN" ]]; then
+  for f in "$HOME"/.lark-agent/*/env; do
+    [[ -f "$f" && "$f" != "$ROOT/env" ]] || continue
+    DSN=$(grep -m1 '^LARK_PG_DSN=' "$f" 2>/dev/null | cut -d= -f2-) && [[ -n "$DSN" ]] && break
+  done
+fi
+if [[ -n "$DSN" ]]; then
+  echo "LARK_PG_DSN=$DSN" >> "$ROOT/env"
+  echo "  已继承 LARK_PG_DSN（定时任务 / 群聊记忆可用）"
+else
+  echo "  ⚠️ 没有 LARK_PG_DSN —— 定时任务和群聊长期记忆将不可用，"
+  echo "     需要的话手动加进 $ROOT/env 后重启实例"
+fi
 umask 022
 
 # 「管理实例」：集中放跨应用能力（contact:user.id:readonly 查通讯录、
