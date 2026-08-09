@@ -45,23 +45,49 @@ LARK_APP_ID=$APP_ID
 LARK_APP_SECRET=$APP_SECRET
 EOF
 
-# PG：定时任务和群聊长期记忆都要它。不继承的话新实例会「看着正常但功能缺一半」——
-# agent 调 create_scheduled_task 只会拿到「未配置 LARK_PG_DSN」，用户以为登记成功了。
-# 优先用环境变量；没有就从已有实例里抄一份（同一台机器共用一个库）。
-DSN="${LARK_PG_DSN:-}"
-if [[ -z "$DSN" ]]; then
-  for f in "$HOME"/.lark-agent/*/env; do
-    [[ -f "$f" && "$f" != "$ROOT/env" ]] || continue
-    DSN=$(grep -m1 '^LARK_PG_DSN=' "$f" 2>/dev/null | cut -d= -f2-) && [[ -n "$DSN" ]] && break
-  done
+# 共享配置：这些是「一台机器一份、所有实例通用」的东西，不是每个 bot 独有的。
+#
+# 漏了不会报错，只会**静悄悄少功能** —— 这坑踩过：carol 让 bot 登记定时任务，
+# bot 照做了却拿到「未配置 LARK_PG_DSN」；GITHUB_TOKEN 漏了则 github MCP 照样加载，
+# 只是每次调用都 401。所以宁可多继承，也别让新实例带着半残的功能上线。
+#
+# 优先取环境变量；没有就从已有实例的 env 里抄（同一台机器共用同一份）。
+SHARED_KEYS=(
+  LARK_PG_DSN        # 定时任务 + 群聊长期记忆
+  GITHUB_TOKEN       # mcp.json 里的 github MCP
+  HTTPS_PROXY        # 访问 api.anthropic.com 要代理的话
+  HTTP_PROXY
+  NO_PROXY
+  NODE_USE_ENV_PROXY # Node 的 fetch 不读 HTTPS_PROXY，WebFetch 卡死过
+)
+
+inherit_shared() {
+  local key="$1" val="${!1:-}"
+  if [[ -z "$val" ]]; then
+    for f in "$HOME"/.lark-agent/*/env; do
+      [[ -f "$f" && "$f" != "$ROOT/env" ]] || continue
+      val=$(grep -m1 "^${key}=" "$f" 2>/dev/null | cut -d= -f2-)
+      [[ -n "$val" ]] && break
+    done
+  fi
+  [[ -n "$val" ]] || return 1
+  umask 077
+  echo "${key}=${val}" >> "$ROOT/env"
+  umask 022
+}
+
+INHERITED=() MISSING=()
+for k in "${SHARED_KEYS[@]}"; do
+  if inherit_shared "$k"; then INHERITED+=("$k"); else MISSING+=("$k"); fi
+done
+
+[[ ${#INHERITED[@]} -gt 0 ]] && echo "  已继承共享配置：${INHERITED[*]}"
+if [[ " ${MISSING[*]} " == *" LARK_PG_DSN "* ]]; then
+  echo "  ⚠️ 没有 LARK_PG_DSN —— **定时任务和群聊长期记忆将不可用**（agent 登记定时任务会失败）"
+  echo "     手动加进 $ROOT/env 后重启：systemctl --user restart lark-claude@$SLUG"
 fi
-if [[ -n "$DSN" ]]; then
-  echo "LARK_PG_DSN=$DSN" >> "$ROOT/env"
-  echo "  已继承 LARK_PG_DSN（定时任务 / 群聊记忆可用）"
-else
-  echo "  ⚠️ 没有 LARK_PG_DSN —— 定时任务和群聊长期记忆将不可用，"
-  echo "     需要的话手动加进 $ROOT/env 后重启实例"
-fi
+[[ " ${MISSING[*]} " == *" GITHUB_TOKEN "* ]] && echo "  ℹ️ 没有 GITHUB_TOKEN —— github MCP 会 401（不影响其他功能）"
+
 umask 022
 
 # 「管理实例」：集中放跨应用能力（contact:user.id:readonly 查通讯录、

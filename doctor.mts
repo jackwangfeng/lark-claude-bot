@@ -10,21 +10,42 @@ function errOf(e: unknown): { code?: number; msg?: string } {
 }
 
 
-// 桥接实际会用到的权限。required=缺了功能就废，optional=缺了只影响单个特性。
-const NEEDED = [
-  { scope: 'im:message', required: true, why: '以机器人身份发消息 / 更新卡片' },
-  { scope: 'im:message.p2p_msg:readonly', required: true, why: '接收私聊消息' },
-  { scope: 'im:message.group_at_msg:readonly', required: true, why: '接收群里 @ 机器人的消息' },
+// 桥接实际会用到的能力。required=缺了功能就废，optional=缺了只影响单个特性。
+//
+// ⚠️ 用「任一满足」而不是单个字符串精确匹配 —— 智能体类型授予的是细分权限
+// （im:message:send_as_bot / im:message:update …），没有笼统的 im:message。
+// 早先按 im:message 精确匹配，把明明能正常发消息的智能体误报成「缺必需权限」。
+const NEEDED: Array<{ any: string[]; required: boolean; why: string }> = [
   {
-    scope: 'im:message.group_msg:readonly',
+    any: ['im:message', 'im:message:send_as_bot'],
+    required: true,
+    why: '以机器人身份发消息',
+  },
+  {
+    any: ['im:message', 'im:message:update'],
+    required: true,
+    why: '更新卡片（流式回复要它）',
+  },
+  {
+    any: ['im:message.p2p_msg:readonly', 'im:message:readonly'],
+    required: true,
+    why: '接收私聊消息',
+  },
+  {
+    any: ['im:message.group_at_msg:readonly', 'im:message:readonly'],
+    required: true,
+    why: '接收群里 @ 机器人的消息',
+  },
+  {
+    any: ['im:message.group_msg:readonly', 'im:message:readonly'],
     required: false,
     why: '收到群里每条消息的推送 —— 群聊长期记忆的地基，缺了只能看到 @ 你的那句',
   },
-  { scope: 'im:message.group_msg', required: false, why: '拉群历史，补服务重启期间漏掉的消息' },
-  { scope: 'im:chat.members:read', required: false, why: '群聊存档里显示发言人名字，而不是 ou_xxxx' },
-  { scope: 'contact:user.base:readonly', required: false, why: '同上，open_id → 姓名' },
-  { scope: 'im:message.reactions:write_only', required: false, why: '审批时给消息加 👍/❌' },
-  { scope: 'im:resource', required: false, why: '下载消息里的图片/文件' },
+  { any: ['im:message.group_msg'], required: false, why: '拉群历史，补服务重启期间漏掉的消息' },
+  { any: ['im:chat.members:read'], required: false, why: '群聊存档里显示发言人名字，而不是 ou_xxxx' },
+  { any: ['contact:user.base:readonly'], required: false, why: '同上，open_id → 姓名' },
+  { any: ['im:message.reactions:write_only'], required: false, why: '审批时给消息加 👍/❌' },
+  { any: ['im:resource'], required: false, why: '下载消息里的图片/文件' },
 ]
 
 // 通讯录查询只需要「一个」实例有权限，new-bot.sh 会借用它（默认 admin，可用
@@ -60,19 +81,19 @@ try {
 const missReq: typeof NEEDED = []
 const missOpt: typeof NEEDED = []
 for (const n of NEEDED) {
-  if (granted.has(n.scope)) continue
+  if (n.any.some((x) => granted.has(x))) continue
   ;(n.required ? missReq : missOpt).push(n)
 }
 
 if (missReq.length) {
   bad = 1
   console.log('❌ 缺少必需权限（缺了机器人跑不起来）：')
-  for (const n of missReq) console.log(`   ${n.scope}\n      用途：${n.why}`)
+  for (const n of missReq) console.log(`   ${n.any.join(' 或 ')}\n      用途：${n.why}`)
   console.log()
 }
 if (missOpt.length) {
   console.log('⚠️  缺少可选权限（只影响对应特性）：')
-  for (const n of missOpt) console.log(`   ${n.scope}\n      用途：${n.why}`)
+  for (const n of missOpt) console.log(`   ${n.any.join(' 或 ')}\n      用途：${n.why}`)
   console.log()
 }
 if (!missReq.length && !missOpt.length) console.log('✅ 权限齐全\n')
@@ -149,6 +170,27 @@ if (slug) {
     }
   } catch {
     /* 缺 self_manage 权限就查不了，跳过 */
+  }
+}
+
+// 共享配置：漏了不会报错，只会静悄悄少功能 —— 定时任务登记失败、
+// github MCP 每次调用 401。new-bot.sh 现在会自动继承，但老实例和手工建的可能缺。
+{
+  const shared = [
+    { key: 'LARK_PG_DSN', hard: true, why: '定时任务 + 群聊长期记忆；缺了 agent 登记定时任务会失败' },
+    { key: 'GITHUB_TOKEN', hard: false, why: 'mcp.json 里的 github MCP；缺了每次调用 401' },
+  ]
+  const missing = shared.filter((s) => !process.env[s.key])
+  if (missing.length) {
+    console.log('')
+    for (const m of missing) {
+      if (m.hard) bad = 1
+      console.log(`${m.hard ? '❌' : 'ℹ️ '} 缺 ${m.key} —— ${m.why}`)
+    }
+    console.log(`   → 加进 ~/.lark-agent/${process.env.LARK_SLUG || '<slug>'}/env 后重启实例`)
+    console.log('     （同机器其他实例的 env 里可以直接抄）')
+  } else {
+    console.log('\n✅ 共享配置齐全（PG / GitHub token）')
   }
 }
 
