@@ -144,6 +144,27 @@ const SAFE_TOOLS = new Set([
 // 新会话的默认审批模式。true = 所有工具免审批（含 Bash）
 const DEFAULT_YOLO = process.env.DEFAULT_YOLO === 'true'
 
+/**
+ * 这个架构下用不上的内置工具，直接关掉。
+ *
+ * 不只是「防止误用」—— **工具定义每轮都要重付一次**。这里每条消息 spawn 一个
+ * 新 CLI 进程，prompt cache 到不了下一轮，所以上下文里的每个字节都按「每轮」
+ * 计费。31 个内置工具砍掉 13 个，加上系统提示里那段「别用 CronCreate」的说明
+ * 也能删掉，是纯赚。
+ *
+ * 分三类：
+ *   会话级调度  —— 唤醒的是发起它的 SDK 会话，而这里会话跑完就没了（见 README）
+ *   交互式      —— 没有终端，调用了只会让这一轮卡死
+ *   用不到      —— worktree / 设计同步 / 远程触发这些场景不存在
+ */
+const OFF_TOOLS = [
+  'CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', // 会话级，用 mcp__schedule__* 替代
+  'AskUserQuestion', 'ExitPlanMode', 'EnterPlanMode',       // 交互式，会卡死这一轮
+  'EnterWorktree', 'ExitWorktree', 'DesignSync',            // 用不到
+  'RemoteTrigger', 'PushNotification', 'ShareOnboardingGuide',
+  'ReportFindings',
+]
+
 let state: Record<string, ChatState> = {}
 
 export async function loadState() {
@@ -343,7 +364,7 @@ async function runOnce(
         // 插件：plugins/*.mts（自研，能访问 PG/chatId）+ mcp.json（社区现成的）
         // 加功能不用改这里 —— 见 plugins/README.md
         mcpServers: plugins.mcpServers as never,
-        ...(plugins.disallowedTools.length ? { disallowedTools: plugins.disallowedTools } : {}),
+        disallowedTools: [...OFF_TOOLS, ...plugins.disallowedTools],
         ...(sessionId ? { resume: sessionId } : {}),
         includePartialMessages: true, // 打开才有 stream_event 增量
         permissionMode: 'default',
@@ -362,16 +383,9 @@ async function runOnce(
             '比如 WebFetch 抓不动的大页面，改用 curl 抓下来再 grep。\n\n' +
             '踩到环境相关的坑（某类页面抓不动、某个命令在这里不可用之类），' +
             '把结论写进工作目录的 CLAUDE.md，下次会自动带上，不用重新踩。\n\n' +
-            '用户要「每天/每周定时做某事」时，一律用 mcp__schedule__create_scheduled_task 登记。' +
-            '不要用 ScheduleWakeup、CronCreate 或 claude.ai 的云端 routines —— ' +
-            '那些唤醒的是当前 SDK 会话，而这里每条消息是独立进程，会话跑完就没了，' +
-            '而且它们不知道该把结果发到哪个 Lark 会话。cron 用服务器本地时区。\n\n' +
-            '你没有 AskUserQuestion 这类交互工具，调用它只会让这一轮卡死。' +
-            '需要用户做选择时，直接在回复里列编号选项，让他回数字：\n' +
-            '  1. 方案甲 —— 一句话说明\n' +
-            '  2. 方案乙 —— 一句话说明\n' +
-            '然后结束这一轮等他回。能自己合理决定的就别问，' +
-            '只有不同选择会导致完全不同的工作量时才停下来。',
+            '定时任务用 mcp__schedule__create_scheduled_task 登记，cron 用服务器本地时区。\n\n' +
+            '没有交互工具。需要用户做选择时在回复里列编号选项让他回数字，然后结束这一轮。' +
+            '能自己合理决定的就别问。',
         },
       },
     })
