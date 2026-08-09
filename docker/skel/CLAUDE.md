@@ -72,15 +72,11 @@ gh pr list / gh issue list
 
 ## 发图片给用户
 
-生成了图表 / 截图 / 设计稿，**要用 `larkimg` 发出去**：
+生成了图表 / 截图 / 设计稿，用 **`mcp__image__send_image`** 发出去，
+路径填你自己看到的那个（如 `/workspace/chart.png`）。
 
-```bash
-larkimg /workspace/chart.png
-```
-
-不要在回复里写 `![图](/workspace/x.png)` —— 那是容器内路径，Lark 渲染不了，
-用户看到的是一段没用的 markdown。chat_id 会自动解析成当前会话，不用传。
-上限 10MB，超了先压。
+**不要在回复里写 `![图](/workspace/x.png)`** —— 那是容器内路径，
+Lark 渲染不了，用户看到的是一段没用的 markdown。上限 10MB。
 
 ## 环境
 

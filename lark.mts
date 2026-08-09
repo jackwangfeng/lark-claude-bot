@@ -338,6 +338,26 @@ export async function react(messageId: string, emoji = 'THUMBSUP'): Promise<void
   }
 }
 
+/**
+ * 上传本地图片并发到会话。给 plugins/image.mts 用。
+ *
+ * 注意这里的 localPath 必须是**宿主机路径** —— 桥接进程在宿主机上跑，
+ * 容器内路径（/workspace/x.png）它读不到。翻译在插件那边做。
+ */
+export async function sendImage(chatId: string, localPath: string, caption?: string): Promise<void> {
+  const { createReadStream } = await import('node:fs')
+  const up: any = await client.im.image.create({
+    data: { image_type: 'message', image: createReadStream(localPath) as any },
+  })
+  const key = up?.data?.image_key ?? up?.image_key
+  if (!key) throw new Error('上传后没拿到 image_key')
+  if (caption) await sendText(chatId, caption)
+  await client.im.message.create({
+    params: { receive_id_type: 'chat_id' },
+    data: { receive_id: chatId, msg_type: 'image', content: JSON.stringify({ image_key: key }) },
+  })
+}
+
 // 下载消息里的图片/文件到本地，返回路径
 export async function downloadResource(messageId: string, fileKey: string, type: string, destPath: string): Promise<string> {
   const r = await client.im.messageResource.get({

@@ -30,14 +30,6 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 RUN npm install -g @anthropic-ai/claude-code @larksuiteoapi/lark-mcp@0.5.1 \
     && npm cache clean --force
 
-# larkimg：把本地图片发进当前 Lark 会话。
-# agent 在容器里生成的图（图表、头像、截图）只有容器内路径，直接写
-# `![x](/workspace/a.png)` 进回复的话 Lark 渲染不了，用户看到一段没用的 markdown。
-# 宿主机模式的实例用 ~/.local/bin/larkimg，容器模式用这份（chat_id 靠
-# LARK_CHAT_ID 注入，见 claude-exec.sh）。
-COPY bin/larkimg /usr/local/bin/larkimg
-RUN chmod +x /usr/local/bin/larkimg
-
 # 非 root 运行。node 镜像自带 uid/gid 1000 的 node 用户，直接复用
 RUN mkdir -p /workspace && chown -R node:node /workspace
 
