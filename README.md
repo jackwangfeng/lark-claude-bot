@@ -189,11 +189,18 @@ toggle_scheduled_task    暂停 / 恢复
 
 ```bash
 systemctl --user list-units 'lark-claude@*'       # 所有实例
-systemctl --user restart lark-claude@mybot        # 改完代码重启（所有实例共用代码）
+./restart-safe.sh [slug...]                       # 重启（先等正在跑的轮次结束）
+systemctl --user restart lark-claude@mybot        # 直接重启，会掐断进行中的对话
 journalctl --user -u lark-claude@mybot -f         # 跟日志
 ./doctor.sh mybot                                 # 体检：凭证 / 权限 / 长连接 / 可用范围
 npx tsc --noEmit                                  # 类型检查
 ```
+
+⚠️ **别在对话进行中直接 restart。** 容器内进程会被回收、审批通道断开，
+agent 那边看到的是 `Tool permission request failed: AbortError: Stream closed`，
+而且多半会误判成权限配置问题（实测踩过：用户正等着 bot 装依赖画图，
+我一个 restart 把它掐了，它在聊天里跟用户解释「环境拒绝写文件」）。
+用 `./restart-safe.sh` —— 它按容器内有没有带 `LARK_TURN_ID` 的进程判断忙闲。
 
 每个实例的数据：
 
