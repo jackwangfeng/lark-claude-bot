@@ -196,6 +196,14 @@ journalctl --user -u lark-claude@mybot -f         # 跟日志
 npx tsc --noEmit                                  # 类型检查
 ```
 
+进程崩了或被强杀时，那一轮的流式卡片会永远停在「Claude 正在工作…」——
+用户不知道该等还是重发。所以在途卡片会登记到
+`~/.lark-agent/<slug>/pending-cards.json`，**下次启动统一收尾**，
+把卡片改成「⚠️ 这一轮被中断了…重新发一次消息就行」。
+
+落盘而不是放内存，正是因为 SIGKILL 时内存表一起没 —— 那恰恰是最需要它的场景。
+写入用「临时文件 + rename」，避免进程死在写一半留下坏 JSON。
+
 ⚠️ **别在对话进行中直接 restart。** 容器内进程会被回收、审批通道断开，
 agent 那边看到的是 `Tool permission request failed: AbortError: Stream closed`，
 而且多半会误判成权限配置问题（实测踩过：用户正等着 bot 装依赖画图，

@@ -2,11 +2,12 @@
 import {
   makeWSClient, eventDispatcher, sendText, startStreamCard, react, getBotInfo,
   getRecentUserText, getMessage, fetchGroupSince, renderMessages, senderName, downloadResource,
-  fetchMissedEvents,
+  fetchMissedEvents, patchCard, buildCard,
 } from './lark.mts'
 import { saveMessages, pingDb, recentMessages } from './db.mts'
 import { planAttach, type SavedFile } from './attach.mts'
 import { poolStatus } from './accounts.mts'
+import { sweep as sweepCards } from './pending-cards.mts'
 import { startEmbeddingWorker } from './embed-worker.mts'
 import { startScheduler } from './scheduler.mts'
 import {
@@ -700,6 +701,26 @@ async function onMessage(data: Record<string, any>): Promise<void> {
 await loadState()
 await pingDb()
 startEmbeddingWorker()
+
+// 上次没收尾的流式卡片：进程崩了或被重启，卡片会永远停在「Claude 正在工作…」，
+// 用户不知道该等还是该重发。启动时统一收尾，把话说清楚。
+{
+  const n = await sweepCards(async (c) => {
+    const when = new Date(c.at).toLocaleString('zh-CN', { hour12: false })
+    await patchCard(
+      c.messageId,
+      buildCard(
+        `⚠️ 这一轮被中断了（服务在 ${when} 之后重启过），没能跑完。\n\n` +
+          '内容没有丢，重新发一次消息就行。',
+        { done: true, note: '已中断' },
+      ),
+    )
+  }).catch((e) => {
+    console.error('[卡片] 收尾失败:', errMsg(e))
+    return 0
+  })
+  if (n) console.log(`[卡片] 收尾了 ${n} 张上次没跑完的卡片`)
+}
 
 if (!BOT_OPEN_ID) {
   try {

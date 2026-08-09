@@ -1,6 +1,7 @@
 // Lark API 封装：发消息、流式更新卡片、表情回应、下载附件
 import lark from '@larksuiteoapi/node-sdk'
 import { writeFile } from 'node:fs/promises'
+import { register as registerCard, unregister as unregisterCard } from './pending-cards.mts'
 
 const { LARK_APP_ID, LARK_APP_SECRET } = process.env
 if (!LARK_APP_ID || !LARK_APP_SECRET) {
@@ -374,12 +375,18 @@ export async function downloadResource(messageId: string, fileKey: string, type:
  * 流式卡片：先发一张，之后节流 patch。
  * 用法：const s = await startStreamCard(chatId); s.push('文本'); await s.finish('最终文本', '耗时 3s')
  */
-export async function startStreamCard(chatId: string, minIntervalMs = 1200) {
+export async function startStreamCard(chatId: string, minIntervalMs = 1200, label?: string) {
   let text = ''
   let messageId = await sendCard(chatId, buildCard(''))
   let lastSent = 0
   let timer: NodeJS.Timeout | null = null
   let closed = false
+
+  // 登记在途卡片：进程要是没能走到 finish（崩溃 / 被重启），下次启动会把它
+  // 标记成中断，而不是让用户对着「Claude 正在工作…」干等
+  if (messageId) {
+    await registerCard({ chatId, messageId, at: Date.now(), label }).catch(() => {})
+  }
 
   async function flush(done = false, note = ''): Promise<void> {
     if (!messageId) return
@@ -413,6 +420,7 @@ export async function startStreamCard(chatId: string, minIntervalMs = 1200) {
       }
       if (finalText != null && finalText.trim()) text = finalText
       await flush(true, note)
+      if (messageId) await unregisterCard(messageId).catch(() => {})
     },
   }
 }
