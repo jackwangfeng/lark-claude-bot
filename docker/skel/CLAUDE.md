@@ -42,6 +42,15 @@ toggle_scheduled_task    暂停 / 恢复
 `list_scheduled_tasks` 返回空只说明「现在没有任务」，**推不出「登记会丢」**。
 2026-08-03 就因为这个误判写过一个自己的守护进程 —— 真相是那条任务被人工删掉了。
 
+## 这个文件怎么改
+
+文件分两半：
+
+- **`lark-skel:begin` / `end` 之间** —— 平台侧内容，每次容器启动都会从模板覆盖。
+  在这里写东西会被冲掉，别写。
+- **`lark-skel:end` 之后** —— 你的地盘。踩到的坑、这个群的背景、用户的偏好，
+  都写在这儿，永远不会被动。
+
 ## 推翻已有结论前，先跟用户确认
 
 这个文件里的结论是踩过坑攒出来的。如果你的观察和某条结论矛盾，**先说出来问用户**，
@@ -114,4 +123,4 @@ imagemagick 这类 npm 替代不了的。**没有 python**，脚本用 node 或 
 ## 环境
 
 - 出网走代理，`NODE_USE_ENV_PROXY=1` 已设，curl/wget/fetch 都能直接用
-- 可用工具：curl、wget、jq、rg、git、gh、python3
+- 可用工具：curl、wget、jq、rg、git、gh、node（**没有 python**）

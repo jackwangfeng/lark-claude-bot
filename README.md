@@ -210,6 +210,17 @@ agent 那边看到的是 `Tool permission request failed: AbortError: Stream clo
 我一个 restart 把它掐了，它在聊天里跟用户解释「环境拒绝写文件」）。
 用 `./restart-safe.sh` —— 它按容器内有没有带 `LARK_TURN_ID` 的进程判断忙闲。
 
+容器里的 `/workspace/CLAUDE.md` 分两半，各归各管：
+
+```
+<!-- lark-skel:begin --> … <!-- lark-skel:end -->   平台侧，每次启动从 docker/skel/ 覆盖
+（end 之后）                                         agent 自己攒的经验，永不动
+```
+
+改 `docker/skel/CLAUDE.md` 就能推到所有实例，不用挨个手动同步。
+原来的规则是「文件存在就整个不拷」，保住了 agent 的经验但更新推不下去 ——
+一天里手动同步了三次（域名写错、发图方式变了、apt 开放），才改成现在这样。
+
 每个实例的数据：
 
 ```

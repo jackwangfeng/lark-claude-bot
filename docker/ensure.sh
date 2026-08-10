@@ -13,10 +13,48 @@ mkdir -p "$ROOT/claude" "$ROOT/workspace"
 
 # 把环境相关的注意事项放进工作区。Agent SDK 默认加载 project 设置，
 # /workspace/CLAUDE.md 每轮都会自动读到 —— 比写在 systemPrompt 里更靠前、更具体。
-# 只在不存在时拷：agent 自己往里追加的经验不能被覆盖掉。
+#
+# 分成两半，各归各管：
+#   标记块内  平台侧内容，每次从 skel 覆盖 —— 改了 skel 所有实例自动拿到
+#   标记块外  agent 自己攒的经验，永不动
+#
+# 原来的规则是「文件存在就整个不拷」，保住了 agent 的经验，但平台侧的更新
+# 也推不下去 —— 一天里手动同步了三次（域名写错、发图方式变了、apt 开放）。
 SKEL="$(cd "$(dirname "$0")" && pwd)/skel/CLAUDE.md"
-if [[ -f "$SKEL" && ! -f "$ROOT/workspace/CLAUDE.md" ]]; then
-  cp "$SKEL" "$ROOT/workspace/CLAUDE.md"
+if [[ -f "$SKEL" ]]; then
+  python3 - "$SKEL" "$ROOT/workspace/CLAUDE.md" <<'PY'
+import sys, os, re
+
+skel_path, dest = sys.argv[1], sys.argv[2]
+BEGIN = "<!-- lark-skel:begin 这块由 ensure.sh 从 docker/skel/CLAUDE.md 同步，改了会被覆盖 -->"
+END   = "<!-- lark-skel:end 你自己的经验写在这行下面，不会被动 -->"
+
+skel = open(skel_path, encoding="utf8").read().strip()
+block = f"{BEGIN}\n\n{skel}\n\n{END}\n"
+
+if not os.path.exists(dest):
+    open(dest, "w", encoding="utf8").write(block)
+    raise SystemExit
+
+cur = open(dest, encoding="utf8").read()
+
+if BEGIN in cur and END in cur:
+    # 常规路径：只换块内，块外原样保留
+    new = re.sub(
+        re.escape(BEGIN) + r".*?" + re.escape(END) + r"\n?",
+        lambda _: block,
+        cur, count=1, flags=re.S,
+    )
+else:
+    # 老文件没有标记：把 skel 作为新块放前面，原内容整体当成「agent 的经验」留在后面。
+    # 宁可重复也不删 —— 删掉可能丢掉 agent 攒的东西，重复只是啰嗦。
+    new = block + "\n" + cur.lstrip()
+
+if new != cur:
+    tmp = dest + ".tmp"
+    open(tmp, "w", encoding="utf8").write(new)
+    os.replace(tmp, dest)
+PY
 fi
 
 # 凭证：每次都从宿主机同步，不能只在建容器时拷一次。
