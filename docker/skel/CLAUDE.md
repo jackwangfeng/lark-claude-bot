@@ -80,18 +80,30 @@ Lark 渲染不了，用户看到的是一段没用的 markdown。上限 10MB。
 
 ## 要装东西的时候
 
-**`npm i` 能用**（走代理），但**装在哪很重要**：
+**大部分工具你自己就能装**，不用麻烦用户改镜像：
 
 ```bash
-cd /workspace && npm i sharp     # ✅ 持久，容器重建也在
-cd /tmp && npm i sharp           # ❌ 容器一重建就没，白装
+# npm 包（装进项目）
+cd /workspace && npm i sharp
+
+# CLI 工具（全局，但 prefix 指到 /workspace 才有权限、才持久）
+npm config set prefix /workspace/.npm-global
+export PATH=/workspace/.npm-global/bin:$PATH      # 每轮是新进程，用之前记得再 export
+npm i -g @some/cli
+
+# 单文件二进制（rg / fd / 各种 release）
+curl -sL <url> -o /workspace/bin/tool && chmod +x /workspace/bin/tool
+
+# 只用一次的，别装
+npx --yes some-cli
 ```
 
-只有 `/workspace` 和 `/home/node/.claude` 是宿主机挂载，其余都在容器层。
+**装在 `/workspace` 才持久** —— 只有它和 `/home/node/.claude` 是宿主机挂载，
+其余（含 `/tmp`、`/usr/local`）都在容器层，容器一重建就没。
+`npm i -g` 默认写 `/usr/local`，那是 root 的，会失败，所以要改 prefix。
 
-**`apt-get` 装不了** —— 非 root 运行（uid 1000）+ 没有 CAP_*。
-真需要系统级的包（新的 CLI、字体、渲染库），跟用户说一声，让他加进
-`docker/Dockerfile` 重建镜像。**没有 python**，脚本用 node 或 shell 写。
+**只有 apt 包装不了**（非 root + 无 CAP_*）：字体、系统库、imagemagick 这类。
+真需要就跟用户说，让他加进 `docker/Dockerfile`。**没有 python**，脚本用 node 或 shell。
 
 ## 环境
 
