@@ -220,6 +220,21 @@ agent 那边看到的是 `Tool permission request failed: AbortError: Stream clo
 ~/.lark-agent/containers/<slug>/{workspace,claude}   容器模式的工作区
 ```
 
+## 容器里能装东西吗
+
+| | 能否 | 说明 |
+|---|---|---|
+| `npm i` | ✅ | 走代理，实测可用 |
+| `apt-get` | ❌ | 非 root（uid 1000）+ `--cap-drop=ALL` |
+| `pip` | ❌ | 镜像里没有 python，脚本用 node 或 shell |
+
+**装在哪决定了活多久**：只有 `/workspace` 和 `/home/node/.claude` 是宿主机挂载，
+其余（含 `/tmp`）都在容器层，`docker rm` 就没了。踩过一次：agent 把 `sharp`
+装在 `/tmp`，我重建容器后它发现依赖没了，还以为是环境在清理临时文件。
+
+需要系统级的包就加进 `docker/Dockerfile` 重建镜像 —— 但先想想
+**能不能做成插件**（见上面的插件系统），插件跑在宿主机，容器完全不用动。
+
 ## 两种运行模式
 
 | | 容器（默认） | 宿主机 |

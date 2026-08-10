@@ -78,6 +78,21 @@ gh pr list / gh issue list
 **不要在回复里写 `![图](/workspace/x.png)`** —— 那是容器内路径，
 Lark 渲染不了，用户看到的是一段没用的 markdown。上限 10MB。
 
+## 要装东西的时候
+
+**`npm i` 能用**（走代理），但**装在哪很重要**：
+
+```bash
+cd /workspace && npm i sharp     # ✅ 持久，容器重建也在
+cd /tmp && npm i sharp           # ❌ 容器一重建就没，白装
+```
+
+只有 `/workspace` 和 `/home/node/.claude` 是宿主机挂载，其余都在容器层。
+
+**`apt-get` 装不了** —— 非 root 运行（uid 1000）+ 没有 CAP_*。
+真需要系统级的包（新的 CLI、字体、渲染库），跟用户说一声，让他加进
+`docker/Dockerfile` 重建镜像。**没有 python**，脚本用 node 或 shell 写。
+
 ## 环境
 
 - 出网走代理，`NODE_USE_ENV_PROXY=1` 已设，curl/wget/fetch 都能直接用
