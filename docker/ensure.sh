@@ -31,6 +31,25 @@ if [[ -f "$SRC" ]]; then
   install -m 600 "$SRC" "$ROOT/claude/.credentials.json"
 fi
 
+# 允许 agent 自己 sudo apt-get 装系统包。
+#
+# 默认开（LARK_ALLOW_APT=false 可关）。代价说清楚：
+#   · sudo apt-get 实质等于容器内 root（deb 的 postinst 以 root 跑）
+#   · 所以必须去掉 no-new-privileges（setuid 的 sudo 需要它），
+#     并补回 dpkg 要的 capability，否则 apt 会在 chown/setuid 那步失败
+# 接受这个代价的理由：容器内 root ≠ 宿主机 root —— 没挂 docker socket，
+# 凭证本来就在容器里。真要给完全不信任的人用，把这个关掉。
+#
+# ⚠️ apt 装的东西在容器层，`docker rm` 就没了。要持久请装进 /workspace
+# （npm -g 改 prefix、或下二进制），或者干脆加进 Dockerfile。
+if [[ "${LARK_ALLOW_APT:-true}" == "true" ]]; then
+  SEC_OPTS=(--cap-drop=ALL
+            --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER
+            --cap-add=SETUID --cap-add=SETGID --cap-add=FSETID)
+else
+  SEC_OPTS=(--cap-drop=ALL --security-opt no-new-privileges)
+fi
+
 if ! docker container inspect "$NAME" >/dev/null 2>&1; then
   docker run -d --name "$NAME" \
     --add-host=host.docker.internal:host-gateway \
@@ -41,7 +60,7 @@ if ! docker container inspect "$NAME" >/dev/null 2>&1; then
     -e TZ="${TZ:-$(cat /etc/timezone 2>/dev/null || echo Asia/Shanghai)}" \
     -v "$ROOT/claude:/home/node/.claude" \
     -v "$ROOT/workspace:/workspace" \
-    --cap-drop=ALL --security-opt no-new-privileges \
+    "${SEC_OPTS[@]}" \
     --memory="${LARK_MEM:-4g}" --cpus="${LARK_CPUS:-2}" --pids-limit="${LARK_PIDS:-512}" \
     --restart unless-stopped \
     "$IMAGE" >/dev/null

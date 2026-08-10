@@ -30,6 +30,19 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 RUN npm install -g @anthropic-ai/claude-code @larksuiteoapi/lark-mcp@0.5.1 \
     && npm cache clean --force
 
+# 让 agent 能自己装 apt 包（字体、系统库、imagemagick 这类 npm 替代不了的）。
+#
+# 说明白：`sudo apt-get` 实质就是容器内 root —— deb 的 postinst 以 root 执行。
+# 这里接受这个代价，因为容器内 root ≠ 宿主机 root：没挂 docker socket，
+# 凭证本来就在容器里，所以 root 并没有多暴露什么。
+# 但要真能用还需要 ensure.sh 那边放开 no-new-privileges 并补回 dpkg 要的
+# capability（见 LARK_ALLOW_APT），不开的话装到一半会失败。
+RUN apt-get update && apt-get install -y --no-install-recommends sudo \
+    && rm -rf /var/lib/apt/lists/* \
+    && echo 'node ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg' \
+       > /etc/sudoers.d/node-apt \
+    && chmod 440 /etc/sudoers.d/node-apt
+
 # 非 root 运行。node 镜像自带 uid/gid 1000 的 node 用户，直接复用
 RUN mkdir -p /workspace && chown -R node:node /workspace
 

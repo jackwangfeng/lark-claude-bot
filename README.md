@@ -222,18 +222,43 @@ agent 那边看到的是 `Tool permission request failed: AbortError: Stream clo
 
 ## 容器里能装东西吗
 
-| | 能否 | 说明 |
+都能，agent 自己搞得定：
+
+```bash
+cd /workspace && npm i sharp              # 项目依赖
+npm config set prefix /workspace/.npm-global && npm i -g <cli>   # CLI 工具
+curl -sL <url> -o /workspace/bin/x && chmod +x /workspace/bin/x  # 单文件二进制
+sudo apt-get install -y imagemagick       # 系统包，免密码
+```
+
+**关键是装在哪 —— 决定了能活多久：**
+
+| 位置 | 实际在宿主机哪 | `docker rm` 后 |
 |---|---|---|
-| `npm i` | ✅ | 走代理，实测可用 |
-| `apt-get` | ❌ | 非 root（uid 1000）+ `--cap-drop=ALL` |
-| `pip` | ❌ | 镜像里没有 python，脚本用 node 或 shell |
+| 镜像层 | 共享只读层（多容器共用一份） | 还在 |
+| **容器可写层** | `/var/lib/docker/overlay2/*/diff` | **没了** ← apt、`/tmp` 都在这 |
+| 挂载卷 | `~/.lark-agent/containers/<slug>/` | 还在 ← `/workspace`、`/home/node/.claude` |
 
-**装在哪决定了活多久**：只有 `/workspace` 和 `/home/node/.claude` 是宿主机挂载，
-其余（含 `/tmp`）都在容器层，`docker rm` 就没了。踩过一次：agent 把 `sharp`
-装在 `/tmp`，我重建容器后它发现依赖没了，还以为是环境在清理临时文件。
+踩过一次：agent 把 `sharp` 装在 `/tmp`，我重建容器后它发现依赖没了，
+还以为是环境在定期清理临时文件。
 
-需要系统级的包就加进 `docker/Dockerfile` 重建镜像 —— 但先想想
-**能不能做成插件**（见上面的插件系统），插件跑在宿主机，容器完全不用动。
+**所以反复要用的东西加进 `docker/Dockerfile`**，一次性的直接装。
+或者先想想能不能**做成插件**（跑在宿主机，容器完全不用动）。
+
+### apt 权限
+
+`LARK_ALLOW_APT`（默认 `true`）控制。开启时 `ensure.sh` 会：
+
+```
+--cap-drop=ALL --cap-add=CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID,FSETID
+```
+
+并**去掉 `no-new-privileges`** —— setuid 的 `sudo` 需要它，`dpkg` 也要那几个
+capability 才能 chown 文件、切用户。
+
+说清代价：`sudo apt-get` 实质等于**容器内 root**（deb 的 postinst 以 root 执行）。
+接受它的理由是容器内 root ≠ 宿主机 root —— 没挂 docker socket，凭证本来就在
+容器里。给完全不信任的人用就在那个实例的 drop-in 里设 `LARK_ALLOW_APT=false`。
 
 ## 两种运行模式
 

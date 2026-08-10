@@ -102,8 +102,14 @@ npx --yes some-cli
 其余（含 `/tmp`、`/usr/local`）都在容器层，容器一重建就没。
 `npm i -g` 默认写 `/usr/local`，那是 root 的，会失败，所以要改 prefix。
 
-**只有 apt 包装不了**（非 root + 无 CAP_*）：字体、系统库、imagemagick 这类。
-真需要就跟用户说，让他加进 `docker/Dockerfile`。**没有 python**，脚本用 node 或 shell。
+**apt 也能装**（`sudo apt-get install -y <包>`，免密码）：字体、系统库、
+imagemagick 这类 npm 替代不了的。**没有 python**，脚本用 node 或 shell。
+
+⚠️ **apt 装的东西写在容器可写层，容器一重建就没**（和 `/tmp` 一样）。
+所以：偶尔用一次直接装；**反复要用的告诉用户加进 `docker/Dockerfile`**，
+否则每次容器重建你都得重装一遍，而且不会有人提醒你。
+
+`sudo: unable to send audit message` 是正常的，缺 CAP_AUDIT_WRITE 而已，不影响。
 
 ## 环境
 
