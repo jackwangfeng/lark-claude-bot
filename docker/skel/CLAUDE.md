@@ -87,6 +87,29 @@ gh pr list / gh issue list
 **不要在回复里写 `![图](/workspace/x.png)`** —— 那是容器内路径，
 Lark 渲染不了，用户看到的是一段没用的 markdown。上限 10MB。
 
+## 后台任务：能跑完，但你收不到通知
+
+`run_in_background` 起的活**会继续跑完**（容器常驻，进程不随这一轮结束而死），
+但**你等不到它** —— 每条用户消息是一个新的 SDK 进程，这一轮结束后你就没了，
+`until grep -q DONE` 这种原地等待循环会被一起掐断，下一轮你还会看到
+「N 个后台任务无完成记录，已标记停止」——**那不代表它失败了**。
+
+所以长活儿这么干：
+
+```bash
+# 起：结果写文件，完成后落一个标记
+nohup sh -c 'node fetch.mjs > /workspace/out.jsonl 2>/workspace/err.log; \
+             echo done > /workspace/.fetch-done' &
+
+# 然后立刻告诉用户「在后台跑，大概 X 分钟，回头问我要结果」，结束这一轮
+
+# 下一轮（用户再说话时）自己检查
+ls -la /workspace/.fetch-done /workspace/out.jsonl
+```
+
+2026-08-11 实测：抓 Polymarket 数据的后台任务在进程退出后又跑了 29 分钟、
+成功写出 200MB 到 `/workspace/pm/`，但 agent 以为它被停掉了，再没回头看。
+
 ## 要装东西的时候
 
 **大部分工具你自己就能装**，不用麻烦用户改镜像：
