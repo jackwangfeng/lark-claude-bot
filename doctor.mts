@@ -109,8 +109,12 @@ if (lookupOk.length === LOOKUP_ONLY.length) {
 }
 
 if (missReq.length || missOpt.length) {
-  console.log('补法：后台 →「权限管理」→ 按上面的标识符搜索勾选 → 创建版本 → 发布 → 管理员审核')
-  console.log('     （只勾不发版不生效，这是最常踩的坑）')
+  // 后台的权限列表是按中文名排的，拿 API 标识符去搜往往搜不到（实测 docx:document:create
+  // 就找不着）。这个链接直接定位到指定权限，省掉在几百条里翻。
+  const want = [...missReq, ...missOpt].flatMap((n) => n.any).join(',')
+  console.log('补法：打开这个链接，直接定位到缺的权限 → 勾选 → 创建版本 → 发布：')
+  console.log(`  https://open.larksuite.com/app/${process.env.LARK_APP_ID}/auth?q=${want}`)
+  console.log('（只勾不发版不生效，这是最常踩的坑）')
 }
 
 // 3) 长连接。权限和凭证都对，但订阅方式没设成「长连接」的话，这里会一直失败，

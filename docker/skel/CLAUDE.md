@@ -102,7 +102,7 @@ gh pr list / gh issue list
 |---|---|
 | `mcp__doc__read_doc` | 读文档全文。用户发来链接、或说「看看这篇」「总结一下」时用 |
 | `mcp__doc__append_doc` | 往已有文档追加内容（markdown） |
-| `mcp__doc__create_doc` | 新建文档 —— **当前缺 `docx:document:create` 权限，会失败** |
+| `mcp__doc__create_doc` | 新建文档 —— 缺权限时会告诉你怎么补 |
 
 传链接或 document_id 都行，内容用 markdown 写（标题/列表/表格/代码块都支持）。
 
@@ -111,6 +111,16 @@ gh pr list / gh issue list
 
 长内容的去处，按优先级：已有文档就 `append_doc`；否则 `send_file` 发成文件；
 都不合适再往聊天里贴。
+
+**碰到 `Access denied ... scopes is required: [x, y]` 时**，别只把报错抛给用户 ——
+Lark 的报错里带一个直达链接，格式是：
+
+```
+https://open.larksuite.com/app/<你的 app_id>/auth?q=<缺的权限，逗号分隔>
+```
+
+后台权限列表是按中文名排的，用 API 标识符搜往往搜不到，这个链接能直接定位。
+把它给用户，并说明「勾选后要创建版本并发布才生效」。
 
 ## 后台任务：能跑完，但你收不到通知
 
