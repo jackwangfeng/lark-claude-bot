@@ -13,6 +13,75 @@ import type { PluginContext } from '../plugins.mts'
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] })
 
+/**
+ * markdown → 可直接插入的顶层块。
+ *
+ * ⚠️ 必须剥掉 block_id / parent_id / children —— 那是 convert 生成的临时 ID，
+ * 带着它们调 documentBlockChildren.create 会报 `invalid param`（错误信息里
+ * 完全看不出是这个原因，我是逐字段试出来的）。服务端要自己分配 ID。
+ */
+async function mdToBlocks(markdown: string): Promise<Record<string, unknown>[]> {
+  const conv: any = await client.docx.document.convert({
+    data: { content_type: 'markdown', content: flattenTables(markdown) },
+  })
+  const blocks: any[] = conv?.data?.blocks ?? conv?.blocks ?? []
+  const firstLevel: string[] = conv?.data?.first_level_block_ids ?? conv?.first_level_block_ids ?? []
+  return blocks
+    .filter((b) => firstLevel.includes(b.block_id))
+    .map(({ block_id, parent_id, children, ...rest }) => rest)
+}
+
+/**
+ * markdown 表格 → 纯文本行。
+ *
+ * 表格在 Lark 是嵌套块（表格 + 每个单元格一个子块），而我们只提交顶层块、
+ * 丢掉了 children，单元格就没了 —— 服务端报 `invalid param`，看不出是表格的锅。
+ * 逐个元素试出来的：标题/正文/列表/代码块/引用/粗斜体都正常，只有表格挂。
+ *
+ * 要真正支持得递归提交子块并维护 parent 关系，代价不小。降级成对齐的文本行，
+ * 信息一条不丢，只是没有表格边框。
+ */
+function flattenTables(md: string): string {
+  const lines = md.split('\n')
+  const out: string[] = []
+  let table: string[][] = []
+
+  const flush = () => {
+    if (!table.length) return
+    // 按列算宽度，用空格对齐 —— 等宽显示时仍然像个表
+    const widths = table[0]!.map((_, i) =>
+      Math.max(...table.map((r) => [...(r[i] ?? '')].reduce((n, ch) => n + (ch.charCodeAt(0) > 127 ? 2 : 1), 0))),
+    )
+    for (const row of table) {
+      out.push(
+        row
+          .map((cell, i) => {
+            const w = [...cell].reduce((n, ch) => n + (ch.charCodeAt(0) > 127 ? 2 : 1), 0)
+            return cell + ' '.repeat(Math.max(0, widths[i]! - w))
+          })
+          .join('  ')
+          .trimEnd(),
+      )
+    }
+    out.push('')
+    table = []
+  }
+
+  for (const line of lines) {
+    const t = line.trim()
+    // |---|---| 这种分隔行直接丢
+    if (/^\|[\s:|-]+\|$/.test(t)) continue
+    if (/^\|.*\|$/.test(t)) {
+      table.push(t.slice(1, -1).split('|').map((c) => c.trim()))
+      continue
+    }
+    flush()
+    out.push(line)
+  }
+  flush()
+  return out.join('\n')
+}
+
 /** 从各种形态的链接/输入里抠出 document_id */
 function docIdOf(input: string): string {
   const s = input.trim()
@@ -63,7 +132,12 @@ export default (_ctx: PluginContext) =>
           '返回文档链接，**拿到后要把链接发给用户**。',
         {
           title: z.string().describe('文档标题'),
-          markdown: z.string().describe('正文，标准 markdown（标题/列表/表格/代码块都支持）'),
+          markdown: z
+            .string()
+            .describe(
+              '正文，标准 markdown。标题/列表/代码块/引用/粗斜体都能正常渲染；' +
+                '表格会被转成对齐的文本行（Lark 的表格是嵌套块，暂不支持），数据不丢但没有边框。',
+            ),
         },
         async ({ title, markdown }) => {
           try {
@@ -71,20 +145,11 @@ export default (_ctx: PluginContext) =>
             const id = c?.data?.document?.document_id ?? c?.document?.document_id
             if (!id) return text('建文档失败：没拿到 document_id')
 
-            // markdown → 文档块
-            const conv: any = await client.docx.document.convert({
-              data: { content_type: 'markdown', content: markdown },
-            })
-            const blocks = conv?.data?.blocks ?? conv?.blocks ?? []
-            const firstLevel: string[] = conv?.data?.first_level_block_ids ?? conv?.first_level_block_ids ?? []
-
-            if (blocks.length) {
+            const children = await mdToBlocks(markdown)
+            if (children.length) {
               await client.docx.documentBlockChildren.create({
                 path: { document_id: id, block_id: id },
-                data: {
-                  children: blocks.filter((b: any) => firstLevel.includes(b.block_id)),
-                  index: 0,
-                },
+                data: { children, index: 0 },
                 params: { document_revision_id: -1 },
               } as any)
             }
@@ -125,16 +190,11 @@ export default (_ctx: PluginContext) =>
         async ({ doc, markdown }) => {
           const id = docIdOf(doc)
           try {
-            const conv: any = await client.docx.document.convert({
-              data: { content_type: 'markdown', content: markdown },
-            })
-            const blocks = conv?.data?.blocks ?? conv?.blocks ?? []
-            const firstLevel: string[] = conv?.data?.first_level_block_ids ?? conv?.first_level_block_ids ?? []
-            if (!blocks.length) return text('转换后没有内容可追加')
-
+            const children = await mdToBlocks(markdown)
+            if (!children.length) return text('转换后没有内容可追加')
             await client.docx.documentBlockChildren.create({
               path: { document_id: id, block_id: id },
-              data: { children: blocks.filter((b: any) => firstLevel.includes(b.block_id)) },
+              data: { children },
               params: { document_revision_id: -1 },
             } as any)
             return text(`已追加到文档 ${id}`)
