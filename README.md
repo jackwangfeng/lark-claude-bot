@@ -19,6 +19,8 @@ Lark 消息 ─┐
 - **容器隔离**：每个 bot 一个 Docker 容器，碰不到宿主机（也可切宿主机模式自用）
 - **Lark OpenAPI**：agent 能查群成员、搜云文档、读多维表格
 - **云文档读写**：`mcp__doc__read_doc` / `append_doc` / `create_doc`，内容用 markdown
+- **API 兜底**：没有现成 MCP 工具时，agent 自己搜（`find_lark_api`，索引 1631 个接口）
+  再调（`call_lark_api`）—— 日历、审批、任务、邮件、考勤都能用
 - **定时任务**：「每天九点给我整理…」到点自动跑并推回会话
 - **插件系统**：加功能改一个配置文件，不用动核心代码
 - **斜杠命令**：`/new` `/cd` `/stop` `/status` `/yolo`；其余转给 Claude Code（`/usage` `/context` `/compact` …）
@@ -157,7 +159,23 @@ export default (ctx: PluginContext) =>
 
 现有的：`plugins/schedule.mts`（定时任务）、`plugins/chatlog.mts`（会话检索）、
 `plugins/send.mts`（发图片 / 文件）、`plugins/doc.mts`（云文档读写）、
+`plugins/larkapi.mts`（API 兜底）、
 `mcp.json` 里的 `lark`（群成员 / 云文档 / 多维表格，只在群聊加载）。
+
+### 兜底通道：`larkapi`
+
+Lark 有上千个 API，不可能每个都包一层。`find_lark_api` 从 SDK 类型文件里
+解析出 **1631 个接口**（类型文件里没有真实 URL，只有 api-explorer 的
+`project/resource/apiName/version`，正好对应 SDK 方法名），`call_lark_api`
+传方法名就能调。
+
+**这不是放权** —— `claude-exec.sh` 每轮把 `LARK_APP_SECRET` 注进容器（给 lark-mcp 用），
+agent 本来就能自己 curl 任意接口。这个通道只是让它可用、可控：不用手拼 token、
+错误按 Lark 格式解析（含缺权限的后台直达链接）、**而且有 deny 名单** —— 裸 curl
+是一点护栏都没有的。
+
+deny 拦两类：会绕过桥接机制的（直接发消息跳过流式卡片）、不可逆或影响他人的
+（删除、改文档权限、增删群成员）。路径和 SDK 方法名两条路都拦，不然换个入口就绕过去了。
 
 > `doc` 插件只做三件常用的事，而没有直接放开 lark MCP —— 那个是 `preset.default`，
 > 20+ 个工具，每轮都要付工具定义的 token，而且 `scope=group` 私聊用不了。

@@ -124,6 +124,34 @@ https://open.larksuite.com/app/<你的 app_id>/auth?q=<缺的权限，逗号分�
 后台权限列表是按中文名排的，用 API 标识符搜往往搜不到，这个链接能直接定位。
 把它给用户，并说明「勾选后要创建版本并发布才生效」。
 
+## Lark 还能做什么：先找 MCP，没有再自己调 API
+
+**顺序**：
+
+1. **先看有没有专门的 MCP 工具** —— `mcp__schedule__*`（定时任务）、
+   `mcp__doc__*`（云文档）、`mcp__send__*`（发图/文件）、`mcp__chatlog__*`（会话检索）、
+   `mcp__lark__*`（群成员/多维表格，群聊才有）。这些的说明里写清了「什么时候该用」。
+2. **没有就自己找**：`mcp__larkapi__find_lark_api` 搜关键词，
+   索引里有 **1631 个接口**（日历、审批、任务、邮件、招聘、考勤、视频会议、
+   多维表格、云盘…）。用英文术语搜命中率高：`calendar` `approval` `task` `bitable` `vc`。
+3. **拿到方法名就调**：`mcp__larkapi__call_lark_api`，传 `sdk` 参数
+   （如 `calendar.calendar.list`），token 自动带上，不用自己拼。
+
+```
+find_lark_api {"keyword": "calendar"}
+  → client.calendar.calendar.list()   [v4]
+call_lark_api {"sdk": "calendar.calendar.list", "params": {"page_size": 10}}
+```
+
+**参数报 `field validation failed` 很正常** —— 去
+`https://open.larksuite.com/search?q=<关键词>` 查文档，改了再试，别反复重试同样的参数。
+
+**缺权限时报错里带后台直达链接**，把它给用户，并说明「勾选后要创建版本并发布，
+还有几分钟生效延迟」。
+
+⚠️ 少数接口被禁：直接发消息（会绕过流式卡片，你正常回复就行）、删除类、
+改文档权限、增删群成员、改应用可用范围。这些要么该你直接做，要么该让用户自己做。
+
 ## 后台任务：能跑完，但你收不到通知
 
 `run_in_background` 起的活**会继续跑完**（容器常驻，进程不随这一轮结束而死），
