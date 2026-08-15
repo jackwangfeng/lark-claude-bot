@@ -748,6 +748,32 @@ for (const { chatId, chatType } of knownChats({ includeUnknown: true })) {
   }
 }
 
+/**
+ * 判断一轮「跑完了」的结果其实是失败。返回原因，正常则返回 ''。
+ *
+ * 为什么需要：run() 只在真抛异常时才 throw，而认证过期、额度耗尽这类
+ * 是 CLI 正常返回的一段文本 —— 调度器看不出来，会记成 ok。
+ * 实测 carol 的新闻简报连着两天「5 秒完成、状态 ok」，内容却只有一行
+ * 「Failed to authenticate: OAuth session expired」，直到她自己来问才发现。
+ *
+ * 只匹配开头：正文里提到「额度」「认证」是正常的（比如新闻里就有），
+ * 而这类系统错误一定是整段回复的全部内容。
+ */
+function looksBroken(text: string, note?: string): string {
+  if (note === 'rate_limited') return '账号额度用完了，这一轮没能执行'
+  const head = (text || '').trim().slice(0, 200)
+  if (!head) return '没有任何输出'
+  const patterns: Array<[RegExp, string]> = [
+    [/Failed to authenticate|OAuth session expired/i, '凭证失效，容器里的 Claude 登录态需要修复'],
+    [/^⛔ 额度用完了/, '账号额度用完了'],
+    [/Invalid API key|authentication_error/i, '认证失败'],
+    [/binary exists but failed to launch|native binary at .* exited/i, 'Claude CLI 启动失败'],
+    [/^❌ /, '执行出错'],
+  ]
+  for (const [re, why] of patterns) if (re.test(head)) return why
+  return ''
+}
+
 // 定时任务：到点主动跑一轮，把结果推到那个会话。
 // 复用消息处理的同一套排队 —— 定时任务和用户消息不能并发跑同一个会话。
 //
@@ -771,7 +797,15 @@ startScheduler(async (task) => {
         // 定时任务无人值守，不能停在那儿等审批 —— 一律拒绝，让它换个办法
         approve: async () => false,
       })
-      await card.finish(`⏰ **${task.title}**\n\n${text}`, note)
+      const bad = looksBroken(text, note)
+      await card.finish(
+        `⏰ **${task.title}**\n\n${bad ? `❌ ${bad}\n\n` : ''}${text}`,
+        bad ? 'error' : note,
+      )
+      // run() 不抛异常也可能是失败的 —— 认证过期、额度耗尽都只是「一段文本」。
+      // 不抛出去的话调度器记成 ok，任务连着几天没产出也没人知道
+      //（carol 的新闻简报就这么静默坏了两天，靠她抱怨才发现）。
+      if (bad) throw new Error(bad)
     } catch (e) {
       await card.finish(`⏰ **${task.title}**\n\n❌ ${errMsg(e)}`, 'error')
       throw e // 让调度器记下 last_error
