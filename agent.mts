@@ -45,6 +45,8 @@ export interface RunOptions {
   defaultCwd: string
   slug: string
   isGroup?: boolean
+  /** 发起这一轮的人，插件里建文档时要把他加成协作者 */
+  senderOpenId?: string
 }
 
 export interface RunResult {
@@ -267,7 +269,7 @@ export async function run(
 async function runOnce(
   chatId: string,
   prompt: string,
-  { onDelta, onTool, approve, defaultCwd, slug, isGroup, sessionKey, fresh }: RunOptions,
+  { onDelta, onTool, approve, defaultCwd, slug, isGroup, sessionKey, fresh, senderOpenId }: RunOptions,
 ): Promise<RunResult> {
   // 会话按 key 存；发消息仍然发到 chatId。两者分开，定时任务才能有自己的上下文。
   const key = sessionKey || chatId
@@ -275,7 +277,7 @@ async function runOnce(
 
   const chat = getChat(key, defaultCwd)
   if (fresh) chat.sessionId = null
-  const plugins = await loadPlugins({ chatId, slug, isGroup: Boolean(isGroup) })
+  const plugins = await loadPlugins({ chatId, slug, isGroup: Boolean(isGroup), senderOpenId })
 
   // 容器模式下 chat.cwd 是容器内路径；spawn wrapper 时宿主机的 cwd 必须真实存在，
   // 否则 child_process.spawn 直接 ENOENT（表现为「binary exists but failed to launch」）

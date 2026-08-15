@@ -680,6 +680,7 @@ async function onMessage(data: Record<string, any>): Promise<void> {
         defaultCwd: DEFAULT_CWD,
         slug: SLUG,
         isGroup,
+        senderOpenId: openId,
         onDelta: (d) => card.push(d),
         onTool: (name, input) => {
           // 免审批模式下这是唯一的留痕，落 journal 便于事后追查

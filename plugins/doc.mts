@@ -92,9 +92,91 @@ function docIdOf(input: string): string {
   return s.replace(/^https?:\/\/\S+\//, '').split('?')[0]!
 }
 
+/**
+ * 建完文档把访问权给出去 —— 否则只有机器人自己能看，用户点开是「无权限」。
+ *
+ * 两条路，按精确度排：
+ *   私聊  把发起人加成协作者（可编辑）—— 要 drive:drive 或 drive:file
+ *   退路  设成组织内可读 —— 只要 docs:permission.setting:write_only
+ *
+ * 实测 jeff-bot2：加协作者缺 drive 权限失败，退到组织内可读成功。
+ * 所以退路不是可选项，是主力路径。
+ *
+ * 授权失败不抛错 —— 文档已经建好了，因为授权失败就当整体失败反而更糟，
+ * 把情况回给 agent 让它转告用户即可。
+ */
+async function grantAccess(
+  docId: string,
+  senderOpenId: string | undefined,
+  isGroup: boolean,
+): Promise<string> {
+  const tries: Array<[string, () => Promise<unknown>]> = []
+  if (!isGroup && senderOpenId) {
+    tries.push([
+      '已把你加为协作者（可编辑）',
+      () =>
+        client.drive.permissionMember.create({
+          path: { token: docId },
+          params: { type: 'docx', need_notification: false },
+          data: { member_type: 'openid', member_id: senderOpenId, perm: 'edit' },
+        } as any),
+    ])
+  }
+  tries.push([
+    '已设为组织内成员可阅读',
+    () =>
+      client.drive.permissionPublic.patch({
+        path: { token: docId },
+        params: { type: 'docx' },
+        data: { link_share_entity: 'tenant_readable' },
+      } as any),
+  ])
+
+  let lastErr = ''
+  for (const [ok, fn] of tries) {
+    try {
+      await fn()
+      return ok
+    } catch (e) {
+      lastErr = (e as any)?.response?.data?.msg ?? (e as Error).message
+    }
+  }
+  if (/scope/i.test(lastErr)) {
+    return (
+      '⚠️ 但**没能授权**，用户现在打不开这篇文档。\n' +
+      '让用户补这个权限：`docs:permission.setting:write_only`（勾选后创建版本并发布）。\n' +
+      '在那之前，让用户去文档右上角「分享」自己改成组织内可读。'
+    )
+  }
+  return `⚠️ 授权失败：${lastErr}。让用户自己在文档「分享」里放开权限。`
+}
+
+/**
+ * 取文档的真实访问链接。
+ *
+ * ⚠️ 拼不出来。租户的文档在专属域名下（如 esgcvr7shapz.sg.larksuite.com），
+ * 而 open.larksuite.com 是开放平台，不是文档域名 —— 我一开始按后者拼，
+ * 用户点开是「无权限」，其实是压根点错了地方。
+ * 只能查 metas 拿。
+ */
+async function docUrl(docId: string): Promise<string> {
+  try {
+    const r: any = await client.request({
+      method: 'POST',
+      url: '/open-apis/drive/v1/metas/batch_query',
+      data: { request_docs: [{ doc_token: docId, doc_type: 'docx' }], with_url: true },
+    })
+    const url = (r?.data ?? r)?.metas?.[0]?.url
+    if (url) return url
+  } catch {
+    /* 查不到就退回下面的提示 */
+  }
+  return `（拿不到访问链接，文档 id：${docId}，在 Lark 里搜标题也能找到）`
+}
+
 export const scope = 'all'
 
-export default (_ctx: PluginContext) =>
+export default (ctx: PluginContext) =>
   createSdkMcpServer({
     name: 'doc',
     version: '1.0.0',
@@ -154,13 +236,9 @@ export default (_ctx: PluginContext) =>
               } as any)
             }
 
-            const url = `https://open.larksuite.com/docx/${id}`
-            return text(
-              `已创建文档「${title}」\n${url}\n\n` +
-                '把这个链接发给用户。注意：新建的文档只有机器人自己能看，' +
-                '用户要访问的话，你得告诉他们你没法自动授权 —— ' +
-                '这一点如果成为问题，让用户反馈给管理员。',
-            )
+            const grant = await grantAccess(id, ctx.senderOpenId, ctx.isGroup)
+            const url = await docUrl(id)
+            return text(`已创建文档「${title}」\n${url}\n\n${grant}\n\n把链接发给用户。`)
           } catch (e) {
             const msg = (e as any)?.response?.data?.msg ?? (e as Error).message
             // 智能体自带的是 docx:document:write_only（能往已有文档写），

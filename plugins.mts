@@ -17,6 +17,8 @@ export interface PluginContext {
   /** 实例名，也是容器名后缀 */
   slug: string
   isGroup: boolean
+  /** 发起这一轮的人的 open_id。建文档后要把他加成协作者，否则他打不开 */
+  senderOpenId?: string
 }
 
 /**

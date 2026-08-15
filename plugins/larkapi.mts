@@ -69,7 +69,11 @@ async function loadApiIndex(): Promise<ApiEntry[]> {
 const DENY: Array<[RegExp, string]> = [
   [/^\/open-apis\/im\/v1\/messages\b.*$/, '发消息请直接回复用户，或用 mcp__send__*；直接调这个会绕过流式卡片'],
   [/\/(delete|remove)\b/i, '删除类操作请先跟用户确认，确认后让用户自己在界面上做'],
-  [/^\/open-apis\/drive\/v1\/permissions\//, '改文档权限影响他人，不要自动做'],
+  [
+    /^\/open-apis\/drive\/v1\/permissions\//,
+    '改文档权限影响他人。给自己新建的文档授权用 mcp__doc__create_doc（它会自动做），' +
+      '给别人的文档改权限请让用户自己在「分享」里操作',
+  ],
   [/^\/open-apis\/im\/v1\/chats\/[^/]+\/members\b/, '增删群成员影响他人，让用户自己操作'],
   [/^\/open-apis\/application\/v6\/applications\/[^/]+\/(contacts_range|visibility)/, '改应用可用范围要管理员来'],
 ]
@@ -81,7 +85,11 @@ const DENY: Array<[RegExp, string]> = [
 const DENY_SDK: Array<[RegExp, string]> = [
   [/^im\.message\.(create|reply|update|patch|delete)$/, '发消息请直接回复用户，或用 mcp__send__*；直接调会绕过流式卡片'],
   [/\.(delete|remove|batchDelete)$/i, '删除类操作先跟用户确认，让他自己在界面上做'],
-  [/^drive\.permission/, '改文档权限影响他人，不要自动做'],
+  [
+    /^drive\.permission/,
+    '改文档权限影响他人。给自己新建的文档授权用 mcp__doc__create_doc（它会自动做），' +
+      '给别人的文档改权限请让用户自己在「分享」里操作',
+  ],
   [/^im\.chatMembers\.(create|delete)$/, '增删群成员影响他人，让用户自己操作'],
   [/^application\..*(visibility|contactsRange)/i, '改应用可用范围要管理员来'],
 ]
@@ -163,9 +171,9 @@ export default (_ctx: PluginContext) =>
             .string()
             .optional()
             .describe('接口路径，如 /open-apis/calendar/v4/calendars。没有 SDK 方法时才用'),
-          params: z.record(z.any()).optional().describe('query 参数'),
-          data: z.record(z.any()).optional().describe('请求体'),
-          path_params: z.record(z.any()).optional().describe('路径参数，如 { document_id: "xxx" }'),
+          params: z.record(z.string(), z.any()).optional().describe('query 参数'),
+          data: z.record(z.string(), z.any()).optional().describe('请求体'),
+          path_params: z.record(z.string(), z.any()).optional().describe('路径参数，如 { document_id: "xxx" }'),
         },
         async ({ sdk, method, path, params, data, path_params }) => {
           // 优先走 SDK 方法：路径、版本、参数位置都由 SDK 处理，不用手拼

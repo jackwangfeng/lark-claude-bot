@@ -22,6 +22,10 @@
     "verbatimModuleSyntax": true,
     "resolveJsonModule": true
   },
-  "include": ["*.mts"],
+  // ⚠️ 必须带上 plugins/ —— 原来只写 "*.mts"，只匹配根目录，
+  // 插件从来没被检查过。结果 plugins/doc.mts 里调了个根本不存在的
+  // grantAccess()，`npx tsc --noEmit` 照样报「通过」，直到用户在 Lark 里
+  // 看到「创建失败：grantAccess is not defined」才发现。
+  "include": ["*.mts", "plugins/**/*.mts"],
   "exclude": ["node_modules", ".venv", "docker"]
 }
