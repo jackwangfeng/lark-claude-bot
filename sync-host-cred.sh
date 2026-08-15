@@ -41,12 +41,19 @@ PY
 
 if [[ -z "$name" ]]; then
   # refreshToken 对不上任何一个号 —— 说明宿主机刷新过了（token 已轮换），
-  # 或者登了个池子外的号。用 expiresAt 判断是不是 state.current 的新版本。
-  name=$(python3 -c "
-import json,os
-try: print(json.load(open('$STATE')).get('current',''))
-except Exception: print('')")
-  [[ -n "$name" ]] || { echo "认不出宿主机登的是哪个号，跳过"; exit 0; }
+  # ⚠️ 认不出来就**什么都不做**，绝不猜。
+  #
+  # 早先这里退回 state.current，那是错的 —— state.current 是**容器**在用的号，
+  # 跟宿主机登的是谁毫无关系。2026-08-15 踩过：把宿主机切到 acc2 后，
+  # Claude Code 一分钟内就刷新并轮换了 refreshToken，这个脚本按新 token 匹配不上，
+  # 退回 state.current(=main)，于是把 acc2 的凭证写进了 main.json —— 池子里
+  # 两个号变成同一个，main 的凭证只剩备份里有。
+  #
+  # 认不出的正常原因就是「宿主机刚刷新过、token 已轮换」。这种情况下唯一安全的
+  # 动作是等：下次宿主机再刷新前，池里那份还是能用的（refreshToken 有效期几周）；
+  # 真要让池子跟上，重新 ./add-account.sh <名字> 覆盖一次即可。
+  echo "认不出宿主机登的是池里哪个号（多半是刚刷新过、token 已轮换），跳过 —— 不猜"
+  exit 0
 fi
 
 POOL="$DIR/$name.json"
