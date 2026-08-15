@@ -359,6 +359,43 @@ export async function sendImage(chatId: string, localPath: string, caption?: str
   })
 }
 
+/**
+ * 上传本地文件并发到会话。给 plugins/file.mts 用。
+ *
+ * 和图片走的是不同接口：图片 im.image.create（image_type: message），
+ * 文件 im.file.create（要带 file_type + file_name，收件人看到的就是这个名字）。
+ *
+ * localPath 必须是**宿主机路径** —— 桥接在宿主机跑，容器内路径读不到，翻译在插件那边做。
+ */
+export async function sendFile(
+  chatId: string,
+  localPath: string,
+  fileName: string,
+  caption?: string,
+): Promise<void> {
+  const { createReadStream } = await import('node:fs')
+  const ext = (fileName.split('.').pop() || '').toLowerCase()
+  // Lark 只认这几个 file_type，其余一律 stream（收件人体验没差别，只影响预览图标）
+  const known = ['opus', 'mp4', 'pdf', 'doc', 'xls', 'ppt']
+  const fileType = known.includes(ext) ? ext : 'stream'
+
+  const up: any = await client.im.file.create({
+    data: {
+      file_type: fileType as any,
+      file_name: fileName,
+      file: createReadStream(localPath) as any,
+    },
+  })
+  const key = up?.data?.file_key ?? up?.file_key
+  if (!key) throw new Error('上传后没拿到 file_key')
+
+  if (caption) await sendText(chatId, caption)
+  await client.im.message.create({
+    params: { receive_id_type: 'chat_id' },
+    data: { receive_id: chatId, msg_type: 'file', content: JSON.stringify({ file_key: key }) },
+  })
+}
+
 // 下载消息里的图片/文件到本地，返回路径
 export async function downloadResource(messageId: string, fileKey: string, type: string, destPath: string): Promise<string> {
   const r = await client.im.messageResource.get({
