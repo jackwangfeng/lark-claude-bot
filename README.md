@@ -381,6 +381,7 @@ systemd 模板里的（改 unit 或加 drop-in）：
 | `LARK_SEEN_TTL_MS` | `7200000` | 消息去重窗口，必须大于 Lark 最长补投间隔 |
 | `GROUP_CONTEXT_N` | `10` | 群聊每轮自动带上的最近几条，见下 |
 | `CONTEXT_WARN_TOKENS` | `150000` | 上下文超这个数就在卡片脚注提示该压缩了 |
+| `GROUP_AUTO_RESET_TOKENS` | `300000` | 群聊上下文超这个数自动开新会话（0=关） |
 | `ARCHIVE_DM` | `false` | 私聊也入库 + 向量化，见下 |
 | `LARK_ACCOUNT_PRIMARY` | `main` | 账号池的主力号，见下 |
 | `ATTACH_DEBOUNCE_MS` | `2500` | 连发的附件攒多久合成一轮 |

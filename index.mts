@@ -106,6 +106,18 @@ function isDuplicate(id: string): boolean {
 // 只提醒不自动压：压缩会丢细节，该不该压用户比我们清楚。
 const CONTEXT_WARN_TOKENS = Number(process.env.CONTEXT_WARN_TOKENS || 150_000)
 
+/**
+ * 群聊上下文超过这个数就自动开新会话（0 = 关闭）。
+ *
+ * **只对群聊做**，私聊不做 —— 群的历史在 PG 里（每条消息 + bot 回复都存了，
+ * 还有向量检索），重置只丢「这一轮任务的工作记忆」，历史随时能捞回来；
+ * 私聊没有这层兜底，丢了就得让 agent 自己去翻 .jsonl。
+ *
+ * 群里本来就人多话杂、话题切换频繁，长上下文的边际价值低而成本是线性的：
+ * 实测一个群聊到 478k 时单轮 $1.05，重置后回到 $0.06 量级。
+ */
+const GROUP_AUTO_RESET_TOKENS = Number(process.env.GROUP_AUTO_RESET_TOKENS || 300_000)
+
 /** 每个会话上一轮的上下文大小，给 /status 看 */
 const lastContext = new Map<string, number>()
 
@@ -678,6 +690,27 @@ async function onMessage(data: Record<string, any>): Promise<void> {
       })
       if (contextTokens) lastContext.set(chatId, contextTokens)
       await card.finish(final, [note, contextHint(contextTokens)].filter(Boolean).join(' · '))
+
+      // 群聊上下文过大就自动开新会话。放在回复发出**之后**，
+      // 这一轮该用的上下文已经用完了，不影响本次质量，只影响下一轮。
+      if (isGroup && GROUP_AUTO_RESET_TOKENS > 0 && (contextTokens ?? 0) >= GROUP_AUTO_RESET_TOKENS) {
+        await updateChat(chatId, { sessionId: null }).catch(() => {})
+        lastContext.delete(chatId)
+        console.log(`[会话] ${chatId} 上下文 ${Math.round((contextTokens ?? 0) / 1000)}k，已自动重置`)
+        await sendText(
+          chatId,
+          `🔄 上下文已达 ${Math.round((contextTokens ?? 0) / 1000)}k，自动开了新会话（省钱）。\n\n` +
+            '**群里的历史没丢** —— 每条消息和我的回复都存着，' +
+            '要翻旧账直接问我就行，我会去检索。',
+        ).catch(() => {})
+      }
+
+      // 把 bot 自己的回复也存档。
+      //
+      // 原来只存用户发言，所以 /new 之后 agent 用 chatlog 检索，只能搜到
+      // 「别人问过什么」，搜不到「我上次是怎么答的」—— 而后者往往才是要找的结论。
+      // 群聊一定存；私聊跟 ARCHIVE_DM 走，保持和用户消息同一套策略。
+      if (isGroup || ARCHIVE_DM) void archiveReply(chatId, final, contextTokens)
       console.log(
         `[完成] ${chatId} ${((Date.now() - t0) / 1000).toFixed(1)}s ${note || ''}` +
           (contextTokens ? ` · 上下文 ${Math.round(contextTokens / 1000)}k` : ''),
@@ -772,6 +805,40 @@ function looksBroken(text: string, note?: string): string {
   ]
   for (const [re, why] of patterns) if (re.test(head)) return why
   return ''
+}
+
+/**
+ * 存 bot 自己的回复，让 chatlog 检索能覆盖双向对话。
+ *
+ * message_id 用合成的（`bot-<chatId 尾>-<时间戳>`）—— 流式卡片的 message_id
+ * 拿得到，但那是卡片不是消息，混进去反而容易和补拉的去重逻辑打架。
+ * 合成 id 保证唯一即可，chat_messages 的主键就是靠它防重。
+ *
+ * 存之前砍掉卡片脚注那类噪音，只留正文。
+ */
+async function archiveReply(chatId: string, replyText: string, ctxTokens?: number): Promise<void> {
+  const body = (replyText || '').trim()
+  // 太短的（「好的」「已发送」）没有检索价值，存了只是噪音。
+  // 阈值按「中文算两个字符」折算 —— 直接数长度的话，24 个汉字（已经是完整一句话了）
+  // 会被当成太短丢掉。
+  const weight = [...body].reduce((n, ch) => n + (ch.charCodeAt(0) > 127 ? 2 : 1), 0)
+  if (weight < 30) return
+  try {
+    await saveMessages(SLUG, [
+      {
+        messageId: `bot-${chatId.slice(-8)}-${Date.now()}`,
+        chatId,
+        senderId: BOT_OPEN_ID || 'bot',
+        senderName: `${SLUG}(机器人)`,
+        msgType: 'text',
+        content: body.length > 20000 ? body.slice(0, 20000) + '…（已截断）' : body,
+        sentAt: Date.now(),
+      },
+    ])
+  } catch (e) {
+    console.error('[存档] bot 回复写入失败:', errMsg(e))
+  }
+  void ctxTokens
 }
 
 // 定时任务：到点主动跑一轮，把结果推到那个会话。
