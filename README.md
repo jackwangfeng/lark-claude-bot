@@ -18,6 +18,7 @@ Lark 消息 ─┐
   用 `mcp__send__send_image` / `send_file` 发回去（图片直接显示，文件可下载）
 - **容器隔离**：每个 bot 一个 Docker 容器，碰不到宿主机（也可切宿主机模式自用）
 - **Lark OpenAPI**：agent 能查群成员、搜云文档、读多维表格
+- **云文档读写**：`mcp__doc__read_doc` / `append_doc` / `create_doc`，内容用 markdown
 - **定时任务**：「每天九点给我整理…」到点自动跑并推回会话
 - **插件系统**：加功能改一个配置文件，不用动核心代码
 - **斜杠命令**：`/new` `/cd` `/stop` `/status` `/yolo`；其余转给 Claude Code（`/usage` `/context` `/compact` …）
@@ -155,7 +156,11 @@ export default (ctx: PluginContext) =>
 单个插件抛异常只跳过它，不影响其他插件和主流程。
 
 现有的：`plugins/schedule.mts`（定时任务）、`plugins/chatlog.mts`（会话检索）、
-`mcp.json` 里的 `lark`（群成员 / 云文档 / 多维表格）。
+`plugins/send.mts`（发图片 / 文件）、`plugins/doc.mts`（云文档读写）、
+`mcp.json` 里的 `lark`（群成员 / 云文档 / 多维表格，只在群聊加载）。
+
+> `doc` 插件只做三件常用的事，而没有直接放开 lark MCP —— 那个是 `preset.default`，
+> 20+ 个工具，每轮都要付工具定义的 token，而且 `scope=group` 私聊用不了。
 
 GitHub 不走 MCP —— 容器里装了 `gh`，`GITHUB_TOKEN` 运行期注入，agent 直接用命令行。
 

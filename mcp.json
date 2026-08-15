@@ -27,8 +27,7 @@
         "bitable_v1_appTable_create",
         "bitable_v1_appTableRecord_create",
         "bitable_v1_appTableRecord_update",
-        "drive_v1_permissionMember_create",
-        "docx_builtin_import"
+        "drive_v1_permissionMember_create"
       ]
     }
   }
