@@ -26,9 +26,16 @@ async function mdToBlocks(markdown: string): Promise<Record<string, unknown>[]> 
   })
   const blocks: any[] = conv?.data?.blocks ?? conv?.blocks ?? []
   const firstLevel: string[] = conv?.data?.first_level_block_ids ?? conv?.first_level_block_ids ?? []
-  return blocks
-    .filter((b) => firstLevel.includes(b.block_id))
-    .map(({ block_id, parent_id, children, ...rest }) => rest)
+
+  // ⚠️ 必须按 first_level_block_ids 的顺序取，不能 filter blocks 数组 ——
+  // blocks 是「所有块的集合」，数组顺序不保证等于文档里的先后顺序，
+  // 只有 first_level_block_ids 是有序的。用 filter 建出来的文档段落会乱序
+  // （实测「一二三」变成「三一二」），而且是间歇性的，看着像随机。
+  const byId = new Map(blocks.map((b) => [b.block_id, b]))
+  return firstLevel
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .map(({ block_id, parent_id, children, ...rest }: any) => rest)
 }
 
 /**
