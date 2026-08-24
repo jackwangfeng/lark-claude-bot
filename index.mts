@@ -6,6 +6,7 @@ import {
 } from './lark.mts'
 import { saveMessages, pingDb, recentMessages } from './db.mts'
 import { planAttach, type SavedFile } from './attach.mts'
+import { stripMentions, mentionedAll } from './mention.mts'
 import { poolStatus } from './accounts.mts'
 import { sweep as sweepCards } from './pending-cards.mts'
 import { startEmbeddingWorker } from './embed-worker.mts'
@@ -280,12 +281,6 @@ async function saveAttachments(
   return out
 }
 
-function stripMentions(text: string, mentions: Array<{ key?: string }> = []): string {
-  let t = text
-  for (const m of mentions) if (m.key) t = t.split(m.key).join(' ')
-  return t.replace(/\s+/g, ' ').trim()
-}
-
 function mentionedBot(mentions: Array<{ id?: { open_id?: string } }> = []): boolean {
   if (!mentions.length) return false
   // 没拿到自身 open_id 时只能退化：宁可误响应，也别整个群里失灵
@@ -460,7 +455,16 @@ async function onMessage(data: Record<string, any>): Promise<void> {
   //   私聊 —— 必须在 users.json 里（可用范围在私聊场景是硬约束，这里再兜一层）
   //   群聊 —— 群成员名单即授权名单，任何人 @ 都服务；但群成员能进的只有这个群自己的容器
   if (isGroup) {
-    if (!mentionedBot(mentions)) return
+    if (!mentionedBot(mentions) && !mentionedAll(message)) {
+      // ⚠️ 这里以前是光秃秃一个 return —— 整套系统最大的观测盲区：
+      // 「@ 了但没反应」和「压根没收到这条」在日志里长得一模一样，没法查。
+      // 只在「@ 了人但判定不是我」时记一行（群里绝大多数消息没有 @，全打会淹掉日志）。
+      // 真出现「明明 @ 了我却被丢」时，这行会把收到的原始 mentions 打出来，一次定位。
+      if (mentions.length) {
+        console.log(`[未@我] ${chatId} 收到的 mentions=${JSON.stringify(mentions)}`)
+      }
+      return
+    }
   } else if (senderIds.some((id) => users.has(id))) {
     // 记下这个私聊对面是谁 —— 补拉时只有 open_id，靠它认人（见下）
     if (openId && known.peerOpenId !== openId) {

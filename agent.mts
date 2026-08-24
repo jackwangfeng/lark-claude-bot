@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { loadPlugins } from './plugins.mts'
-import { currentCredentialPath, currentName, markLimited, writeBack } from './accounts.mts'
+import { currentCredentialPath, currentName, markLimited, writeBack, gatewayMode } from './accounts.mts'
 
 const execFileP = promisify(execFile)
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -73,9 +73,24 @@ function containerRoot(slug: string): string {
   return join(homedir(), '.lark-agent', 'containers', slug)
 }
 
+/**
+ * 交给 Claude Code 子进程的环境。
+ * 网关模式必须丢掉 ANTHROPIC_API_KEY，否则 CLI 会走按量 API 而不是 Max 池。
+ */
+function claudeSpawnEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extra }
+  if (gatewayMode()) {
+    delete env.ANTHROPIC_API_KEY
+    env.ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL
+    env.ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN
+  }
+  return env
+}
+
 async function ensureContainer(slug: string): Promise<string> {
-  // 启用多账号池时，指定这一轮用哪个号的凭证；没启用则 env 为空，ensure.sh 走默认
-  const cred = await currentCredentialPath().catch(() => null)
+  // 网关模式切号在服务端，不要再把本机 OAuth 凭证拷进容器。
+  // 启用本地账号池时，指定这一轮用哪个号；没启用则 env 为空，ensure.sh 走默认。
+  const cred = gatewayMode() ? null : await currentCredentialPath().catch(() => null)
   const { stdout } = await execFileP(ENSURE_SH, [slug], {
     timeout: 180_000,
     env: { ...process.env, ...(cred ? { LARK_CRED_SRC: cred } : {}) },
@@ -244,6 +259,19 @@ export async function run(
     const acct = await currentName().catch(() => null)
     const r = await runOnce(chatId, prompt, opts)
     if (!r.limited) return r
+    // 网关自己切 Max 号。这边没有本地 OAuth 可换，重试只会用同一张令牌空转。
+    if (gatewayMode()) {
+      const when = r.limited.resetsAt
+        ? new Date(r.limited.resetsAt).toLocaleString('zh-CN', { hour12: false })
+        : '稍后'
+      return {
+        ...r,
+        text:
+          `⛔ 网关额度用完了，${when}恢复。\n\n` +
+          (r.text && !r.text.startsWith('⛔') ? `这一轮已完成的部分：\n${r.text}` : ''),
+        note: 'rate_limited',
+      }
+    }
 
     if (acct) tried.push(acct)
     const next = acct ? await markLimited(acct, r.limited.resetsAt) : null
@@ -287,20 +315,25 @@ async function runOnce(
   // 唯一标记，用于中断后精确回收这一轮的容器内进程（见 killTurnInContainer）
   const turnId = `${chatId}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`
   if (CONTAINER_MODE) {
-    container = await ensureContainer(slug)
+    const name = await ensureContainer(slug)
+    container = name
     spawnCwd = join(containerRoot(slug), 'workspace')
     containerOpts = {
       pathToClaudeCodeExecutable: EXEC_WRAPPER,
-      env: {
-        ...process.env,
-        LARK_CONTAINER: container,
+      env: claudeSpawnEnv({
+        LARK_CONTAINER: name,
         LARK_WORKDIR: chat.cwd,
         LARK_TURN_ID: turnId,
         // 容器内 larkimg 发图回本会话要用；宿主机版是反查 sessions.json，
         // 那文件容器里看不到，只能显式传
         LARK_CHAT_ID: chatId,
-      },
+      }),
     }
+  } else if (gatewayMode()) {
+    // 宿主机模式：query() 默认继承 process.env；显式传一份去掉 API_KEY 的，
+    // 避免环境里残留的 key 把请求打到按量 API。
+    containerOpts = { env: claudeSpawnEnv() }
+    console.log(`[网关] ${process.env.ANTHROPIC_BASE_URL}`)
   }
   // 记下这一轮用的是哪个号：撞上限时要标记它，结束时要把刷新过的凭证写回它
   const acct = await currentName().catch(() => null)
@@ -489,7 +522,7 @@ async function runOnce(
 
     // 把这一轮可能刷新过的凭证写回账号池。
     // 刷新会轮换 refresh token，不写回的话下次切回这个号就是过期状态。
-    if (CONTAINER_MODE && acct) {
+    if (CONTAINER_MODE && acct && !gatewayMode()) {
       await writeBack(acct, join(containerRoot(slug), 'claude', '.credentials.json'))
     }
   }

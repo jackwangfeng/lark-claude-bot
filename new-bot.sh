@@ -59,6 +59,8 @@ SHARED_KEYS=(
   HTTP_PROXY
   NO_PROXY
   NODE_USE_ENV_PROXY # Node 的 fetch 不读 HTTPS_PROXY，WebFetch 卡死过
+  ANTHROPIC_BASE_URL # 团队网关；和 AUTH_TOKEN 成对，缺一则退回本机 OAuth
+  ANTHROPIC_AUTH_TOKEN
 )
 
 inherit_shared() {
@@ -87,6 +89,11 @@ if [[ " ${MISSING[*]} " == *" LARK_PG_DSN "* ]]; then
   echo "     手动加进 $ROOT/env 后重启：systemctl --user restart lark-claude@$SLUG"
 fi
 [[ " ${MISSING[*]} " == *" GITHUB_TOKEN "* ]] && echo "  ℹ️ 没有 GITHUB_TOKEN —— github MCP 会 401（不影响其他功能）"
+if [[ " ${MISSING[*]} " == *" ANTHROPIC_BASE_URL "* || " ${MISSING[*]} " == *" ANTHROPIC_AUTH_TOKEN "* ]]; then
+  echo "  ⚠️ 没有 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN —— 会走本机 OAuth，不是团队网关"
+  echo "     从已有实例抄进 $ROOT/env（两行都要），不要设 ANTHROPIC_API_KEY，然后："
+  echo "     systemctl --user restart lark-claude@$SLUG"
+fi
 
 umask 022
 

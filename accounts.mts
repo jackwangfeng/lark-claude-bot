@@ -37,6 +37,15 @@ export interface PoolState {
  */
 const PRIMARY = process.env.LARK_ACCOUNT_PRIMARY || 'main'
 
+/**
+ * 走团队网关（ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN）时，切号在服务端完成，
+ * 本机 ~/.lark-agent/accounts/ 那套 OAuth 文件池不再参与。
+ * 有 ANTHROPIC_API_KEY 会让 Claude Code 走按量 API，网关模式必须丢掉它。
+ */
+export function gatewayMode(): boolean {
+  return Boolean(process.env.ANTHROPIC_BASE_URL?.trim() && process.env.ANTHROPIC_AUTH_TOKEN?.trim())
+}
+
 /** 池里有哪些号。没有 accounts 目录就返回空 —— 那就是没启用多账号 */
 export async function listAccounts(): Promise<string[]> {
   try {
@@ -115,6 +124,7 @@ const isBlocked = (s: PoolState, name: string, now: number): boolean =>
  * 调用方退回原来的 ~/.claude/.credentials.json。
  */
 export async function currentCredentialPath(): Promise<string | null> {
+  if (gatewayMode()) return null
   const all = await listAccounts()
   if (!all.length) return null
 
@@ -164,6 +174,7 @@ export async function currentName(): Promise<string | null> {
  * resetsAt 由 SDK 的 rate_limit_event 给，缺省按 5 小时估。
  */
 export async function markLimited(name: string, resetsAt?: number): Promise<string | null> {
+  if (gatewayMode()) return null
   const all = await listAccounts()
   if (!all.length) return null
 
@@ -186,12 +197,29 @@ export async function markLimited(name: string, resetsAt?: number): Promise<stri
 }
 
 /**
+ * 这份凭证 JSON 里到底还有没有 token。
+ *
+ * 兼容两种外形：{ claudeAiOauth: {...} } 和顶层直接放字段。
+ * 解析不了一律当「没有」—— 宁可不写回（保住池里原件），也不要写坏。
+ */
+function hasTokens(raw: string): boolean {
+  try {
+    const d = JSON.parse(raw) as Record<string, any>
+    const o = (d.claudeAiOauth ?? d) as Record<string, unknown>
+    return Boolean(o.accessToken) && Boolean(o.refreshToken)
+  } catch {
+    return false
+  }
+}
+
+/**
  * 把容器里刷新过的凭证写回池。每轮结束调一次。
  *
  * 必须做：刷新会轮换 refresh token，旧的立即作废。不写回的话，
  * 池里存的是上一次的 token，下次切回来直接是过期状态。
  */
 export async function writeBack(name: string, containerCredPath: string): Promise<void> {
+  if (gatewayMode()) return
   const all = await listAccounts()
   if (!all.includes(name)) return
   try {
@@ -200,6 +228,16 @@ export async function writeBack(name: string, containerCredPath: string): Promis
       readFile(join(DIR, `${name}.json`), 'utf8').catch(() => ''),
     ])
     if (!a || a === b) return // 没变就别写，省得无谓地动文件
+
+    // ⚠️ 刷新失败时 Claude Code 会把 token 字段抹空，这种「空凭证」绝不能写回 ——
+    // 否则一次失败就把池里那份永久毁掉，连人工恢复的余地都没有（原件已被覆盖）。
+    // 2026-08-24 踩过：验 acc2 时刷新失败，写回把 acc2.json 的三个 token 全清了，
+    // 只能从备份里捞。刷新失败可能只是网络抖动，凭证本身未必坏，更不该销毁。
+    if (!hasTokens(a)) {
+      console.warn(`[账号池] ${name} 容器里的凭证是空的（多半刷新失败），不写回，保留池里原件`)
+      return
+    }
+
     await withLock(async () => {
       await copyFile(containerCredPath, join(DIR, `${name}.json`))
       console.log(`[账号池] ${name} 凭证已更新（刷新后写回）`)
@@ -211,6 +249,9 @@ export async function writeBack(name: string, containerCredPath: string): Promis
 
 /** 池子现状，给 /status 用 */
 export async function poolStatus(): Promise<string> {
+  if (gatewayMode()) {
+    return `▶ 网关  ${process.env.ANTHROPIC_BASE_URL!.trim()}`
+  }
   const all = await listAccounts()
   if (!all.length) return ''
   const s = await readState()

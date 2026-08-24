@@ -62,11 +62,18 @@ fi
 # 表现为 "OAuth session expired and could not be refreshed"。
 # 宿主机通常会提前刷新，所以同步过来的 access token 够跑完一轮，容器一般不需要自己刷新。
 #
-# 启用多账号池时（~/.lark-agent/accounts/ 里有号），由桥接经 LARK_CRED_SRC
+# 团队网关模式：Claude 用 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN，
+# 不能再放 OAuth 凭证，否则 CLI 可能走 Max 登录而不是网关。令牌经 docker exec -e
+# 注入（见 claude-exec.sh），不写进容器磁盘。
+# 启用本地账号池时（~/.lark-agent/accounts/ 里有号），由桥接经 LARK_CRED_SRC
 # 指定这一轮用哪个号；没启用就还是用宿主机自己那份。
-SRC="${LARK_CRED_SRC:-$HOME/.claude/.credentials.json}"
-if [[ -f "$SRC" ]]; then
-  install -m 600 "$SRC" "$ROOT/claude/.credentials.json"
+if [[ -n "${ANTHROPIC_BASE_URL:-}" && -n "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+  rm -f "$ROOT/claude/.credentials.json"
+else
+  SRC="${LARK_CRED_SRC:-$HOME/.claude/.credentials.json}"
+  if [[ -f "$SRC" ]]; then
+    install -m 600 "$SRC" "$ROOT/claude/.credentials.json"
+  fi
 fi
 
 # 允许 agent 自己 sudo apt-get 装系统包。
