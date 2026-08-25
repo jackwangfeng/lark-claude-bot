@@ -77,5 +77,24 @@ await t('池里没这个号：不创建新文件', async () => {
   await assert.rejects(readFile(join(DIR, '不存在的号.json'), 'utf8'))
 })
 
+// —— toMs：SDK 的 resetsAt 单位归一 ——
+// 加这组是因为它错了不会报错，只会算出个 1970 年然后静默退到兜底估算。
+const { toMs } = await import('./accounts.mts')
+
+await t('秒 → 毫秒（实测值：2026-08-29 那次）', async () => {
+  assert.equal(toMs(1787968000), 1787968000000)
+})
+await t('已经是毫秒的不动', async () => {
+  assert.equal(toMs(1787968000000), 1787968000000)
+})
+await t('分界线两侧', async () => {
+  assert.equal(toMs(1e12), 1e12, '1e12 及以上当毫秒')
+  assert.equal(toMs(1e12 - 1), (1e12 - 1) * 1000, '小于 1e12 当秒')
+})
+await t('归一后必须落在合理年份，不能是 1970', async () => {
+  const y = new Date(toMs(1787968000)).getFullYear()
+  assert.ok(y >= 2020 && y <= 2100, `年份 ${y} 不合理`)
+})
+
 await rm(DIR, { recursive: true, force: true })
-console.log(`\n  ${pass}/6 通过`)
+console.log(`\n  ${pass}/10 通过`)

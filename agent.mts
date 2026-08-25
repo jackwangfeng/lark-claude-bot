@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { loadPlugins } from './plugins.mts'
-import { currentCredentialPath, currentName, markLimited, writeBack, gatewayMode } from './accounts.mts'
+import { currentCredentialPath, currentName, markLimited, writeBack, gatewayMode, toMs } from './accounts.mts'
 
 const execFileP = promisify(execFile)
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -262,7 +262,7 @@ export async function run(
     // 网关自己切 Max 号。这边没有本地 OAuth 可换，重试只会用同一张令牌空转。
     if (gatewayMode()) {
       const when = r.limited.resetsAt
-        ? new Date(r.limited.resetsAt).toLocaleString('zh-CN', { hour12: false })
+        ? new Date(toMs(r.limited.resetsAt)).toLocaleString('zh-CN', { hour12: false })
         : '稍后'
       return {
         ...r,
@@ -278,7 +278,7 @@ export async function run(
     if (!next || tried.includes(next)) {
       // 没号可换了（或者换来换去都是试过的）—— 把话说清楚，别只丢一句报错
       const when = r.limited.resetsAt
-        ? new Date(r.limited.resetsAt).toLocaleString('zh-CN', { hour12: false })
+        ? new Date(toMs(r.limited.resetsAt)).toLocaleString('zh-CN', { hour12: false })
         : '稍后'
       return {
         ...r,
@@ -447,7 +447,7 @@ async function runOnce(
             limited = { resetsAt: info.resetsAt, kind: info.rateLimitType }
             console.warn(
               `[额度] ${chatId} 撞上限 ${info.rateLimitType ?? '?'}` +
-                (info.resetsAt ? ` 恢复于 ${new Date(info.resetsAt).toLocaleString('zh-CN')}` : ''),
+                (info.resetsAt ? ` 恢复于 ${new Date(toMs(info.resetsAt)).toLocaleString('zh-CN')}` : ''),
             )
           } else if (info?.status === 'allowed_warning' && typeof info.utilization === 'number') {
             console.log(`[额度] ${chatId} 已用 ${Math.round(info.utilization)}%`)

@@ -170,8 +170,24 @@ export async function currentName(): Promise<string | null> {
 }
 
 /**
+ * 把 SDK 给的 resetsAt 归一成毫秒。
+ *
+ * ⚠️ SDK 类型只写 `resetsAt?: number`，没写单位，**实际给的是秒**。
+ * 2026-08-26 踩过：直接当毫秒用，`new Date(1787968000)` 得到 1970-01-22，
+ * 比 now 小，于是每次都退到「5 小时后」的兜底估算。真实恢复是 8/29 09:46
+ * （撞的是 seven_day 桶），系统却以为 5 小时后就好 —— 到点重试、再撞、
+ * 再等 5 小时，来回空转好几天，日志里还一直显示 1970 年。
+ *
+ * 判据是位数：毫秒时间戳 13 位（>1e12），秒 10 位。用 1e12 当分界线，
+ * 到公元 5138 年前都不会误判。
+ */
+export function toMs(t: number): number {
+  return t < 1e12 ? t * 1000 : t
+}
+
+/**
  * 标记某个号撞了上限，并立刻切走。返回换到了哪个号（没得换返回 null）。
- * resetsAt 由 SDK 的 rate_limit_event 给，缺省按 5 小时估。
+ * resetsAt 由 SDK 的 rate_limit_event 给（单位是秒，见 toMs），缺省按 5 小时估。
  */
 export async function markLimited(name: string, resetsAt?: number): Promise<string | null> {
   if (gatewayMode()) return null
@@ -181,7 +197,8 @@ export async function markLimited(name: string, resetsAt?: number): Promise<stri
   return withLock(async () => {
     const s = await readState()
     const now = Date.now()
-    const until = resetsAt && resetsAt > now ? resetsAt : now + 5 * 3600_000
+    const reset = resetsAt ? toMs(resetsAt) : 0
+    const until = reset > now ? reset : now + 5 * 3600_000
     const blocked = { ...(s.blocked ?? {}), [name]: until }
 
     console.warn(

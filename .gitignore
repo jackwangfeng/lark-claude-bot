@@ -9,6 +9,7 @@ env
 users.json
 sessions.json
 *.log
+*.credentials.json
 
 # 原始需求文档，含 app id
 BRIEF.md
